@@ -141,7 +141,8 @@ pub trait File: Debug + Send + Sync {
         Err(SvsmError::FileSystem(FsError::not_supported()))
     }
 
-    /// Used to truncate the file to the specified size.
+    /// Used to truncate the file to the specified size. A size larger than the
+    /// current one extends the file with zeros.
     ///
     ///  # Arguments
     ///

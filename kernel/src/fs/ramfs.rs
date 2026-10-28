@@ -212,7 +212,8 @@ impl RawRamFile {
         Ok(buffer_offset)
     }
 
-    /// Used to truncate the file to a given size.
+    /// Used to truncate the file to a given size. A size larger than the
+    /// current one extends the file with zeros.
     ///
     /// # Argument
     ///
@@ -224,8 +225,22 @@ impl RawRamFile {
     /// number of bytes file truncated to if successful, SvsmError
     /// otherwise.
     fn truncate(&mut self, size: usize) -> Result<usize, SvsmError> {
-        if size > self.size {
+        if size > isize::MAX as usize {
             return Err(SvsmError::FileSystem(FsError::inval()));
+        }
+
+        if size > self.size {
+            // The pages of a file are zeroed, and so is the part of the last
+            // page after the end of the file.
+            let pages = self.pages.len();
+            if let Err(e) = self.set_capacity(size) {
+                // Do not keep the pages allocated for the larger size.
+                self.pages.truncate(pages);
+                self.capacity = pages * PAGE_SIZE;
+                return Err(e);
+            }
+            self.size = size;
+            return Ok(size);
         }
 
         let offset = page_offset(size);
@@ -541,6 +556,37 @@ mod tests {
             let expected: u8 = if i < 512 { 0xff } else { 0 };
             assert!(*elem == expected);
         }
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "inline assembly")]
+    fn test_ramfs_file_extend() {
+        let _test_mem = TestRootMem::setup(DEFAULT_TEST_MEMORY_SIZE);
+
+        let file = RamFile::new();
+        file.write(&[0xffu8; 100], 0).unwrap();
+
+        // Extending the file past a page boundary adds zeros.
+        assert_eq!(file.truncate(PAGE_SIZE + 10).unwrap(), PAGE_SIZE + 10);
+        assert_eq!(file.size(), PAGE_SIZE + 10);
+        let mut buf = [0xccu8; PAGE_SIZE + 10];
+        assert_eq!(file.read(&mut buf, 0).unwrap(), PAGE_SIZE + 10);
+        for (i, byte) in buf.iter().enumerate() {
+            assert_eq!(*byte, if i < 100 { 0xff } else { 0 });
+        }
+
+        // Shrinking and extending again does not bring the old data back.
+        file.truncate(50).unwrap();
+        file.truncate(200).unwrap();
+        let mut buf = [0xccu8; 200];
+        assert_eq!(file.read(&mut buf, 0).unwrap(), 200);
+        for (i, byte) in buf.iter().enumerate() {
+            assert_eq!(*byte, if i < 50 { 0xff } else { 0 });
+        }
+
+        // A size that is too large is refused and the file is unchanged.
+        file.truncate(usize::MAX).unwrap_err();
+        assert_eq!(file.size(), 200);
     }
 
     #[test]

@@ -432,3 +432,26 @@ fn test_mkdir_unlink_at() {
     raw_close(dirfd);
     rmdir(dir).unwrap();
 }
+
+/// Checks that opening a directory with opendir() fails for a path that does
+/// not exist and for a file.
+#[test]
+#[cfg_attr(not(test_in_svsm), ignore = "Can only be run inside guest")]
+fn test_opendir() {
+    let dir = c"/test_opendir";
+    let file = c"/test_opendir/file";
+
+    mkdir(dir).unwrap();
+    let fd = raw_open(AT_FDCWD, file, O_RDWR | O_CREAT);
+    raw_close(fd);
+
+    drop(opendir(dir).unwrap());
+    assert_eq!(
+        opendir(c"/test_opendir/none").err(),
+        Some(SysCallError::ENOENT)
+    );
+    assert_eq!(opendir(file).err(), Some(SysCallError::ENOTDIR));
+
+    unlink(file).unwrap();
+    rmdir(dir).unwrap();
+}

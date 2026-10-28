@@ -4,10 +4,10 @@
 //
 // Author: Peter Fang <peter.fang@intel.com>
 
-use super::call::{SysCallError, syscall1, syscall2, syscall3, syscall4};
+use super::call::{SysCallError, syscall2, syscall3, syscall4};
 use super::def::{
-    AT_FDCWD, AT_REMOVEDIR, FileFlags, FileModes, O_APPEND, O_CREAT, O_RDONLY, O_RDWR, O_TRUNC,
-    O_WRONLY, SYS_MKDIR, SYS_OPEN, SYS_OPENDIR, SYS_READ, SYS_READDIR, SYS_SEEK, SYS_TRUNCATE,
+    AT_FDCWD, AT_REMOVEDIR, FileFlags, FileModes, O_APPEND, O_CREAT, O_DIRECTORY, O_RDONLY, O_RDWR,
+    O_TRUNC, O_WRONLY, SYS_MKDIR, SYS_OPEN, SYS_READ, SYS_READDIR, SYS_SEEK, SYS_TRUNCATE,
     SYS_UNLINK, SYS_WRITE, SeekMode,
 };
 use super::{DirEnt, Obj, ObjHandle};
@@ -28,11 +28,19 @@ impl Obj for FsObjHandle {
     }
 }
 
+/// Opens a directory with the Linux `openat()` system call and `O_DIRECTORY`.
 pub fn opendir(path: &CStr) -> Result<FsObjHandle, SysCallError> {
-    // SAFETY: SYS_OPENDIR is supported syscall number by the svsm kernel.
+    // SAFETY: Invokes a system call and does not directly change any memory of
+    // the process.
     unsafe {
-        syscall1(SYS_OPENDIR, path.as_ptr() as u64)
-            .map(|ret| FsObjHandle(ObjHandle::new(ret as u32)))
+        syscall4(
+            SYS_OPEN,
+            AT_FDCWD as i64 as u64,
+            path.as_ptr() as u64,
+            (O_RDONLY | O_DIRECTORY).into(),
+            0,
+        )
+        .map(|ret| FsObjHandle(ObjHandle::new(ret as u32)))
     }
 }
 

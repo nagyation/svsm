@@ -11,8 +11,8 @@ use crate::address::VirtAddr;
 use crate::cpu::percpu::current_task;
 use crate::error::SvsmError;
 use crate::fs::{
-    DirEntry, Directory, FileHandle, FsError, FsObj, UserBuffer, create_file_root, find_dir,
-    lookup_root, mkdir_root, rmdir_root, unlink_root,
+    DirEntry, Directory, FileHandle, FsError, FsObj, UserBuffer, create_file_root, lookup_root,
+    mkdir_root, rmdir_root, unlink_root,
 };
 use crate::mm::guestmem::UserPtr;
 use alloc::string::String;
@@ -203,15 +203,6 @@ pub fn sys_unlink(dirfd: usize, path: usize, flags: usize) -> Result<u64, SysCal
     }
 
     Ok(0)
-}
-
-pub fn sys_opendir(path: usize) -> Result<u64, SysCallError> {
-    let user_path_ptr = UserPtr::<c_char>::new(VirtAddr::from(path))?;
-    let user_path = user_path_ptr.read_c_string()?;
-    let dir = find_dir(current_task().rootdir(), &user_path)?;
-    let id = obj_add(Arc::new(FsObj::new_dir(&dir)))?;
-
-    Ok(u32::from(id).into())
 }
 
 pub fn sys_readdir(obj_id: u32, dirents: usize, size: usize) -> Result<u64, SysCallError> {

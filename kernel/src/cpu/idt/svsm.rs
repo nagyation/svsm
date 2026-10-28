@@ -478,7 +478,6 @@ fn handle_system_call(ctxt: &mut X86ExceptionContext) {
         SYS_SEEK => sys_seek(ctxt.regs.rdi as u32, ctxt.regs.rsi, ctxt.regs.r8),
         SYS_UNLINK => sys_unlink(ctxt.regs.rdi, ctxt.regs.rsi, ctxt.regs.r8),
         SYS_TRUNCATE => sys_truncate(ctxt.regs.rdi as u32, ctxt.regs.rsi),
-        SYS_OPENDIR => sys_opendir(ctxt.regs.rdi),
         SYS_READDIR => sys_readdir(ctxt.regs.rdi as u32, ctxt.regs.rsi, ctxt.regs.r8),
         SYS_MKDIR => sys_mkdir(ctxt.regs.rdi, ctxt.regs.rsi, ctxt.regs.r8),
         // Class 3 SysCalls.

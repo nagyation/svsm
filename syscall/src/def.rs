@@ -24,7 +24,6 @@ pub const SYS_WRITE: u64 = CLASS1 + 2;
 pub const SYS_SEEK: u64 = CLASS1 + 3;
 pub const SYS_TRUNCATE: u64 = CLASS1 + 4;
 pub const SYS_UNLINK: u64 = CLASS1 + 5;
-pub const SYS_OPENDIR: u64 = CLASS1 + 6;
 pub const SYS_READDIR: u64 = CLASS1 + 7;
 pub const SYS_MKDIR: u64 = CLASS1 + 8;
 

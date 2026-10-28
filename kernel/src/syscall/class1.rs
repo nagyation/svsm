@@ -6,15 +6,16 @@
 
 extern crate alloc;
 
-use super::obj::{obj_add, obj_get};
+use super::obj::{ObjHandle, obj_add, obj_get};
 use crate::address::VirtAddr;
 use crate::cpu::percpu::current_task;
 use crate::error::SvsmError;
 use crate::fs::{
-    DirEntry, FsError, FsObj, UserBuffer, create_root, find_dir, mkdir_root, open_root, rmdir_root,
-    truncate, unlink_root,
+    DirEntry, Directory, FileHandle, FsError, FsObj, UserBuffer, create_file_root, find_dir,
+    lookup_root, mkdir_root, rmdir_root, unlink_root,
 };
 use crate::mm::guestmem::UserPtr;
+use alloc::string::String;
 use alloc::sync::Arc;
 use core::cmp::min;
 use core::ffi::c_char;
@@ -22,34 +23,101 @@ use core::str;
 use syscall::SysCallError::*;
 use syscall::*;
 
-pub fn sys_open(path: usize, mode: usize, flags: usize) -> Result<u64, SysCallError> {
-    let user_path_ptr = UserPtr::<c_char>::new(VirtAddr::from(path))?;
-    let user_path = user_path_ptr.read_c_string()?;
-    let file_mode = FileModes::from_bits(mode).ok_or(SysCallError::EINVAL)?;
-    let file_flags = FileFlags::from_bits(flags).ok_or(SysCallError::EINVAL)?;
-    let file_handle = {
-        let open_res = open_root(
-            current_task().rootdir(),
-            &user_path,
-            file_mode.contains(FileModes::READ),
-            file_mode.contains(FileModes::WRITE),
-        );
-        if open_res.is_ok() || !file_flags.contains(FileFlags::CREATE) {
-            open_res
-        } else {
-            create_root(current_task().rootdir(), user_path.as_str())
+/// Reads a path passed by user mode.
+fn user_path(path: usize) -> Result<String, SysCallError> {
+    let path = UserPtr::<c_char>::new(VirtAddr::from(path))?
+        .read_c_string()
+        .map_err(|err| match err {
+            // The path is longer than PATH_MAX.
+            SvsmError::InvalidBytes => ENAMETOOLONG,
+            err => SysCallError::from(err),
+        })?;
+
+    // Like on Linux, an empty path does not refer to anything.
+    if path.is_empty() {
+        return Err(ENOENT);
+    }
+    Ok(path)
+}
+
+/// Returns the directory a path passed to an `*at()` system call is
+/// resolved from.
+///
+/// Absolute paths and relative paths with `AT_FDCWD` are resolved from the
+/// root directory of the task, which is also its working directory. Other
+/// relative paths are resolved from the directory `dirfd` refers to.
+fn base_dir(dirfd: usize, path: &str) -> Result<Arc<dyn Directory>, SysCallError> {
+    // The descriptor is an `int`, so only the low 32 bits are used.
+    if path.starts_with('/') || dirfd as i32 == AT_FDCWD {
+        return Ok(current_task().rootdir());
+    }
+
+    let obj = obj_get(ObjHandle::new(dirfd as u32))?;
+    obj.as_fs().and_then(FsObj::directory).ok_or(ENOTDIR)
+}
+
+pub fn sys_open(
+    dirfd: usize,
+    path: usize,
+    flags: usize,
+    _mode: usize,
+) -> Result<u64, SysCallError> {
+    let path = user_path(path)?;
+    let base = base_dir(dirfd, &path)?;
+    // The flags are an `int`, so only the low 32 bits are used.
+    let flags = flags as u32;
+    // The access mode 3 is for descriptors that are used for neither reading
+    // nor writing, like Linux does.
+    let (read, write) = match flags & O_ACCMODE {
+        O_RDONLY => (true, false),
+        O_WRONLY => (false, true),
+        O_RDWR => (true, true),
+        _ => (false, false),
+    };
+    let create = flags & O_CREAT != 0;
+
+    // Like on Linux, a directory is not created by opening it.
+    if create && flags & O_DIRECTORY != 0 {
+        return Err(EINVAL);
+    }
+
+    let entry = match lookup_root(base.clone(), &path) {
+        Ok(_) if create && flags & O_EXCL != 0 => return Err(EEXIST),
+        Ok(entry) => entry,
+        Err(SvsmError::FileSystem(FsError::FileNotFound)) if create => {
+            match create_file_root(base.clone(), &path) {
+                Ok(file) => DirEntry::File(file),
+                // Another task created the file after the lookup, which
+                // O_CREAT without O_EXCL does not mind.
+                Err(SvsmError::FileSystem(FsError::FileExists)) if flags & O_EXCL == 0 => {
+                    lookup_root(base, &path)?
+                }
+                Err(err) => return Err(err.into()),
+            }
         }
-    }?;
+        Err(err) => return Err(err.into()),
+    };
 
-    if file_mode.contains(FileModes::TRUNC) {
-        truncate(&file_handle, 0)?;
-    }
+    let obj = match entry {
+        DirEntry::Directory(_) if write || create || flags & O_TRUNC != 0 => return Err(EISDIR),
+        DirEntry::Directory(dir) => FsObj::new_dir(&dir),
+        DirEntry::File(_) if flags & O_DIRECTORY != 0 => return Err(ENOTDIR),
+        DirEntry::File(file) => {
+            // Like on Linux, O_TRUNC truncates the file even if it is
+            // opened for reading only.
+            if flags & O_TRUNC != 0 {
+                file.truncate(0)?;
+            }
+            let fh = FileHandle::new(&file, read, write);
+            if flags & O_APPEND != 0 {
+                FsObj::new_file(fh.with_append())
+            } else {
+                FsObj::new_file(fh)
+            }
+        }
+    };
 
-    if file_mode.contains(FileModes::APPEND) {
-        file_handle.seek_end(0);
-    }
-
-    let id = obj_add(Arc::new(FsObj::new_file(file_handle)))?;
+    let id = obj_add(Arc::new(obj))?;
 
     Ok(u32::from(id).into())
 }
@@ -63,7 +131,11 @@ pub fn sys_read(obj_id: u32, user_addr: usize, bytes: usize) -> Result<u64, SysC
     fs_obj
         .read_buffer(&mut buffer)
         .map(|b| b as u64)
-        .map_err(SysCallError::from)
+        .map_err(|err| match err {
+            // Only directories do not support reading.
+            SvsmError::NotSupported => EISDIR,
+            err => SysCallError::from(err),
+        })
 }
 
 pub fn sys_write(obj_id: u32, user_addr: usize, bytes: usize) -> Result<u64, SysCallError> {
@@ -75,7 +147,12 @@ pub fn sys_write(obj_id: u32, user_addr: usize, bytes: usize) -> Result<u64, Sys
     fs_obj
         .write_buffer(&buffer)
         .map(|b| b as u64)
-        .map_err(SysCallError::from)
+        .map_err(|err| match err {
+            // Only directories do not support writing, and they cannot be
+            // opened for writing.
+            SvsmError::NotSupported => EBADF,
+            err => SysCallError::from(err),
+        })
 }
 
 pub fn sys_seek(obj_id: u32, offset: usize, raw_mode: usize) -> Result<u64, SysCallError> {

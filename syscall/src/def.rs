@@ -32,6 +32,32 @@ pub const SYS_RMDIR: u64 = CLASS1 + 9;
 // Syscall number in class3
 pub const SYS_CAPABILITIES: u64 = CLASS3;
 
+// Flags of the open system call. They have the values of the Linux `O_*` flags
+// on x86-64. Linux ignores the flags it does not know, and so does the SVSM.
+
+/// Mask of the access mode in the flags
+pub const O_ACCMODE: u32 = 0o3;
+/// Open for reading only
+pub const O_RDONLY: u32 = 0o0;
+/// Open for writing only
+pub const O_WRONLY: u32 = 0o1;
+/// Open for reading and writing
+pub const O_RDWR: u32 = 0o2;
+/// Create the file if it does not exist
+pub const O_CREAT: u32 = 0o100;
+/// With `O_CREAT`, fail if the file exists
+pub const O_EXCL: u32 = 0o200;
+/// Truncate the file to zero
+pub const O_TRUNC: u32 = 0o1000;
+/// Every write goes to the end of the file
+pub const O_APPEND: u32 = 0o2000;
+/// Fail if the path is not a directory
+pub const O_DIRECTORY: u32 = 0o200000;
+
+/// Directory descriptor of the `*at()` system calls that stands for the
+/// working directory of the task, which is its root directory
+pub const AT_FDCWD: i32 = -100;
+
 ///Maximum length of path name including null character in bytes
 pub const PATH_MAX: usize = 4096;
 
@@ -64,7 +90,7 @@ bitflags! {
         const READ = 1 << 0;
         /// Open file for writing
         const WRITE = 1 << 1;
-        /// Place file pointer at EOF
+        /// Every write goes to the end of the file
         const APPEND = 1 << 2;
         /// Truncate file to zero
         const TRUNC = 1 << 3;

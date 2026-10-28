@@ -472,7 +472,7 @@ fn handle_system_call(ctxt: &mut X86ExceptionContext) {
         SYS_EXEC => sys_exec(ctxt.regs.rdi, ctxt.regs.rsi, ctxt.regs.r8),
         SYS_CLOSE => sys_close(ctxt.regs.rdi as u32),
         // Class 1 SysCalls.
-        SYS_OPEN => sys_open(ctxt.regs.rdi, ctxt.regs.rsi, ctxt.regs.r8),
+        SYS_OPEN => sys_open(ctxt.regs.rdi, ctxt.regs.rsi, ctxt.regs.r8, ctxt.regs.r9),
         SYS_READ => sys_read(ctxt.regs.rdi as u32, ctxt.regs.rsi, ctxt.regs.r8),
         SYS_WRITE => sys_write(ctxt.regs.rdi as u32, ctxt.regs.rsi, ctxt.regs.r8),
         SYS_SEEK => sys_seek(ctxt.regs.rdi as u32, ctxt.regs.rsi, ctxt.regs.r8),

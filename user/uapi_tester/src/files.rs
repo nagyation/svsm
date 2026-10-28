@@ -6,11 +6,47 @@
 
 //! Tests for the file system calls.
 
-use super::syscall::syscall_insn3;
+use super::syscall::{syscall_insn, syscall_insn3, syscall_insn4};
+use core::ffi::CStr;
 use userlib::{
-    FileFlags, FileModes, SYS_TRUNCATE, SeekMode, SysCallError, open, opendir, read, seek,
-    truncate, unlink, write,
+    AT_FDCWD, FileFlags, FileModes, O_ACCMODE, O_APPEND, O_CREAT, O_DIRECTORY, O_EXCL, O_RDONLY,
+    O_RDWR, O_TRUNC, O_WRONLY, SYS_CLOSE, SYS_OPEN, SYS_READ, SYS_SEEK, SYS_TRUNCATE, SYS_WRITE,
+    SeekMode, SysCallError, mkdir, open, opendir, read, rmdir, seek, truncate, unlink, write,
 };
+
+/// Opens a path with the open system call, which works like `openat()`, and
+/// returns the file descriptor, or the negative error number.
+fn raw_open(dirfd: i32, path: &CStr, flags: u32) -> i64 {
+    let dirfd = i64::from(dirfd) as u64;
+    syscall_insn4(SYS_OPEN, dirfd, path.as_ptr() as u64, flags.into(), 0) as i64
+}
+
+/// Closes a file descriptor.
+fn raw_close(fd: i64) {
+    assert_eq!(syscall_insn(SYS_CLOSE, fd as u64), 0);
+}
+
+/// Reads from a file descriptor, and returns the number of bytes or the
+/// negative error number.
+fn raw_read(fd: i64, buf: &mut [u8]) -> i64 {
+    syscall_insn3(
+        SYS_READ,
+        fd as u64,
+        buf.as_mut_ptr() as u64,
+        buf.len() as u64,
+    ) as i64
+}
+
+/// Writes to a file descriptor, and returns the number of bytes or the
+/// negative error number.
+fn raw_write(fd: i64, buf: &[u8]) -> i64 {
+    syscall_insn3(SYS_WRITE, fd as u64, buf.as_ptr() as u64, buf.len() as u64) as i64
+}
+
+/// Returns the negative value of an error, as the system calls return it.
+fn err(error: SysCallError) -> i64 {
+    error as i64
+}
 
 /// Checks that seeking follows Linux: the offset is signed and added to the
 /// start, the current position or the end of the file, a negative result is
@@ -102,4 +138,226 @@ fn test_truncate() {
     drop(dir);
 
     unlink(path).unwrap();
+}
+
+/// Checks that the access mode of the open system call is enforced like on
+/// Linux: reads and writes that the mode does not allow fail with EBADF, also
+/// for a file that the call creates.
+#[test]
+#[cfg_attr(not(test_in_svsm), ignore = "Can only be run inside guest")]
+fn test_open_access_modes() {
+    let path = c"/test_open_access_modes";
+    let mut buf = [0u8; 8];
+
+    let fd = raw_open(AT_FDCWD, path, O_WRONLY | O_CREAT);
+    assert!(fd >= 0);
+    assert_eq!(raw_write(fd, b"abc"), 3);
+    assert_eq!(raw_read(fd, &mut buf), err(SysCallError::EBADF));
+    raw_close(fd);
+
+    let fd = raw_open(AT_FDCWD, path, O_RDONLY);
+    assert!(fd >= 0);
+    assert_eq!(raw_read(fd, &mut buf), 3);
+    assert_eq!(raw_write(fd, b"x"), err(SysCallError::EBADF));
+    raw_close(fd);
+
+    let fd = raw_open(AT_FDCWD, path, O_RDWR);
+    assert!(fd >= 0);
+    assert_eq!(raw_write(fd, b"def"), 3);
+    assert_eq!(raw_read(fd, &mut buf), 0);
+    raw_close(fd);
+
+    // A file created for reading is not open for writing.
+    let other = c"/test_open_access_modes_ro";
+    let fd = raw_open(AT_FDCWD, other, O_RDONLY | O_CREAT);
+    assert!(fd >= 0);
+    assert_eq!(raw_write(fd, b"x"), err(SysCallError::EBADF));
+    raw_close(fd);
+
+    // The access mode 3, like on Linux, is for a descriptor that is used for
+    // neither reading nor writing.
+    let fd = raw_open(AT_FDCWD, path, O_ACCMODE);
+    assert!(fd >= 0);
+    assert_eq!(raw_read(fd, &mut buf), err(SysCallError::EBADF));
+    assert_eq!(raw_write(fd, b"x"), err(SysCallError::EBADF));
+    raw_close(fd);
+
+    unlink(path).unwrap();
+    unlink(other).unwrap();
+}
+
+/// Checks the errors of creating files with the open system call: a file that
+/// does not exist is only created with O_CREAT, O_EXCL fails if it exists,
+/// and the path must have a parent directory and no file as a directory.
+#[test]
+#[cfg_attr(not(test_in_svsm), ignore = "Can only be run inside guest")]
+fn test_open_create_flags() {
+    let path = c"/test_open_create_flags";
+
+    assert_eq!(
+        raw_open(AT_FDCWD, path, O_RDONLY),
+        err(SysCallError::ENOENT)
+    );
+
+    let fd = raw_open(AT_FDCWD, path, O_RDWR | O_CREAT | O_EXCL);
+    assert!(fd >= 0);
+    raw_close(fd);
+    assert_eq!(
+        raw_open(AT_FDCWD, path, O_RDWR | O_CREAT | O_EXCL),
+        err(SysCallError::EEXIST)
+    );
+    // Without O_EXCL, O_CREAT opens an existing file.
+    let fd = raw_open(AT_FDCWD, path, O_RDWR | O_CREAT);
+    assert!(fd >= 0);
+    raw_close(fd);
+
+    assert_eq!(
+        raw_open(AT_FDCWD, c"/no_such_dir/file", O_RDWR | O_CREAT),
+        err(SysCallError::ENOENT)
+    );
+    assert_eq!(
+        raw_open(AT_FDCWD, c"/test_open_create_flags/file", O_RDONLY),
+        err(SysCallError::ENOTDIR)
+    );
+    assert_eq!(raw_open(AT_FDCWD, c"", O_RDONLY), err(SysCallError::ENOENT));
+
+    // A directory is not created with O_CREAT, and nothing is left behind.
+    let dir = c"/test_open_create_flags_dir";
+    assert_eq!(
+        raw_open(AT_FDCWD, dir, O_RDONLY | O_CREAT | O_DIRECTORY),
+        err(SysCallError::EINVAL)
+    );
+    assert_eq!(raw_open(AT_FDCWD, dir, O_RDONLY), err(SysCallError::ENOENT));
+
+    unlink(path).unwrap();
+}
+
+/// Checks the limit of the length of a name: a name of 255 bytes works, a
+/// longer one fails with ENAMETOOLONG, also with O_CREAT.
+#[test]
+#[cfg_attr(not(test_in_svsm), ignore = "Can only be run inside guest")]
+fn test_open_name_length() {
+    // The path is a slash, the name and a NUL.
+    let mut path = [b'a'; 258];
+    path[0] = b'/';
+
+    path[257] = 0;
+    let too_long = CStr::from_bytes_with_nul(&path[..258]).unwrap();
+    assert_eq!(
+        raw_open(AT_FDCWD, too_long, O_RDONLY),
+        err(SysCallError::ENAMETOOLONG)
+    );
+    assert_eq!(
+        raw_open(AT_FDCWD, too_long, O_RDWR | O_CREAT),
+        err(SysCallError::ENAMETOOLONG)
+    );
+
+    path[256] = 0;
+    let longest = CStr::from_bytes_with_nul(&path[..257]).unwrap();
+    let fd = raw_open(AT_FDCWD, longest, O_RDWR | O_CREAT);
+    assert!(fd >= 0);
+    raw_close(fd);
+    unlink(longest).unwrap();
+}
+
+/// Checks O_TRUNC and O_APPEND: O_TRUNC empties the file, and with O_APPEND
+/// every write goes to the end of the file, also after seeking to the start.
+#[test]
+#[cfg_attr(not(test_in_svsm), ignore = "Can only be run inside guest")]
+fn test_open_trunc_append() {
+    let path = c"/test_open_trunc_append";
+    let mut buf = [0u8; 16];
+
+    let fd = raw_open(AT_FDCWD, path, O_WRONLY | O_CREAT);
+    assert_eq!(raw_write(fd, b"abcdef"), 6);
+    raw_close(fd);
+
+    let fd = raw_open(AT_FDCWD, path, O_WRONLY | O_APPEND);
+    assert_eq!(raw_write(fd, b"12"), 2);
+    assert_eq!(syscall_insn3(SYS_SEEK, fd as u64, 0, 0), 0);
+    assert_eq!(raw_write(fd, b"34"), 2);
+    raw_close(fd);
+
+    let fd = raw_open(AT_FDCWD, path, O_RDONLY);
+    assert_eq!(raw_read(fd, &mut buf), 10);
+    assert_eq!(&buf[..10], b"abcdef1234");
+    raw_close(fd);
+
+    let fd = raw_open(AT_FDCWD, path, O_WRONLY | O_TRUNC);
+    assert!(fd >= 0);
+    raw_close(fd);
+    let fd = raw_open(AT_FDCWD, path, O_RDONLY);
+    assert_eq!(raw_read(fd, &mut buf), 0);
+    raw_close(fd);
+
+    // Like on Linux, O_TRUNC also empties a file opened for reading.
+    let fd = raw_open(AT_FDCWD, path, O_RDWR);
+    assert_eq!(raw_write(fd, b"xyz"), 3);
+    raw_close(fd);
+    let fd = raw_open(AT_FDCWD, path, O_RDONLY | O_TRUNC);
+    assert_eq!(raw_read(fd, &mut buf), 0);
+    raw_close(fd);
+
+    unlink(path).unwrap();
+}
+
+/// Checks opening directories: a directory can be opened for reading, but
+/// not read, and not for writing; O_DIRECTORY needs a directory; and a
+/// relative path is resolved from the directory descriptor, unless it is an
+/// absolute path.
+#[test]
+#[cfg_attr(not(test_in_svsm), ignore = "Can only be run inside guest")]
+fn test_open_directory() {
+    let dir = c"/test_open_directory";
+    let file = c"/test_open_directory/file";
+    let mut buf = [0u8; 8];
+
+    mkdir(dir).unwrap();
+    let fd = raw_open(AT_FDCWD, file, O_RDWR | O_CREAT);
+    assert!(fd >= 0);
+    raw_close(fd);
+
+    let dirfd = raw_open(AT_FDCWD, dir, O_RDONLY);
+    assert!(dirfd >= 0);
+    assert_eq!(raw_read(dirfd, &mut buf), err(SysCallError::EISDIR));
+    assert_eq!(raw_write(dirfd, b"x"), err(SysCallError::EBADF));
+    raw_close(dirfd);
+
+    assert_eq!(raw_open(AT_FDCWD, dir, O_WRONLY), err(SysCallError::EISDIR));
+    assert_eq!(raw_open(AT_FDCWD, dir, O_RDWR), err(SysCallError::EISDIR));
+    assert_eq!(
+        raw_open(AT_FDCWD, dir, O_RDONLY | O_TRUNC),
+        err(SysCallError::EISDIR)
+    );
+    assert_eq!(
+        raw_open(AT_FDCWD, dir, O_RDONLY | O_CREAT),
+        err(SysCallError::EISDIR)
+    );
+    assert_eq!(
+        raw_open(AT_FDCWD, file, O_RDONLY | O_DIRECTORY),
+        err(SysCallError::ENOTDIR)
+    );
+
+    let dirfd = raw_open(AT_FDCWD, dir, O_RDONLY | O_DIRECTORY);
+    assert!(dirfd >= 0);
+    let fd = raw_open(dirfd as i32, c"file", O_RDONLY);
+    assert!(fd >= 0);
+    raw_close(fd);
+    // An absolute path does not use the directory descriptor.
+    let fd = raw_open(dirfd as i32, file, O_RDONLY);
+    assert!(fd >= 0);
+    raw_close(fd);
+    raw_close(dirfd);
+
+    // A descriptor that is not open, or not a directory.
+    assert_eq!(raw_open(1000, c"file", O_RDONLY), err(SysCallError::EBADF));
+    let filefd = raw_open(AT_FDCWD, file, O_RDONLY);
+    assert_eq!(
+        raw_open(filefd as i32, c"other", O_RDONLY),
+        err(SysCallError::ENOTDIR)
+    );
+    raw_close(filefd);
+
+    unlink(file).unwrap();
+    rmdir(dir).unwrap();
 }

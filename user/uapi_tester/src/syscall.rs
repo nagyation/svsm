@@ -51,6 +51,28 @@ pub(crate) fn syscall_insn3(nr: u64, arg1: u64, arg2: u64, arg3: u64) -> u64 {
     ret
 }
 
+/// Issues a system call with four arguments using the `syscall` instruction.
+pub(crate) fn syscall_insn4(nr: u64, arg1: u64, arg2: u64, arg3: u64, arg4: u64) -> u64 {
+    let ret: u64;
+    // SAFETY: only used for system calls that access the memory of the
+    // process the way the caller of this function intends. The registers
+    // clobbered by the instruction are declared.
+    unsafe {
+        asm!(
+            "syscall",
+            inout("rax") nr => ret,
+            in("rdi") arg1,
+            in("rsi") arg2,
+            in("r8") arg3,
+            in("r9") arg4,
+            out("rcx") _,
+            out("r11") _,
+            options(nostack),
+        );
+    }
+    ret
+}
+
 /// Checks that a system call issued with the `syscall` instruction is
 /// dispatched and returns its result. The capabilities call has no side
 /// effects, and the first index after the last capability is an error.

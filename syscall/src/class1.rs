@@ -4,10 +4,11 @@
 //
 // Author: Peter Fang <peter.fang@intel.com>
 
-use super::call::{SysCallError, syscall1, syscall2, syscall3};
+use super::call::{SysCallError, syscall1, syscall2, syscall3, syscall4};
 use super::def::{
-    FileFlags, FileModes, SYS_MKDIR, SYS_OPEN, SYS_OPENDIR, SYS_READ, SYS_READDIR, SYS_RMDIR,
-    SYS_SEEK, SYS_TRUNCATE, SYS_UNLINK, SYS_WRITE, SeekMode,
+    AT_FDCWD, FileFlags, FileModes, O_APPEND, O_CREAT, O_RDONLY, O_RDWR, O_TRUNC, O_WRONLY,
+    SYS_MKDIR, SYS_OPEN, SYS_OPENDIR, SYS_READ, SYS_READDIR, SYS_RMDIR, SYS_SEEK, SYS_TRUNCATE,
+    SYS_UNLINK, SYS_WRITE, SeekMode,
 };
 use super::{DirEnt, Obj, ObjHandle};
 use core::ffi::CStr;
@@ -48,15 +49,36 @@ pub fn readdir(fs: &FsObjHandle, dirents: &mut [DirEnt]) -> Result<usize, SysCal
     }
 }
 
+/// Opens a file with the Linux `openat()` system call. A mode without
+/// `FileModes::READ` or `FileModes::WRITE` opens the file for reading.
 pub fn open(path: &CStr, mode: FileModes, flags: FileFlags) -> Result<FsObjHandle, SysCallError> {
+    let mut open_flags = match (
+        mode.contains(FileModes::READ),
+        mode.contains(FileModes::WRITE),
+    ) {
+        (true, true) => O_RDWR,
+        (false, true) => O_WRONLY,
+        (_, false) => O_RDONLY,
+    };
+    if mode.contains(FileModes::TRUNC) {
+        open_flags |= O_TRUNC;
+    }
+    if mode.contains(FileModes::APPEND) {
+        open_flags |= O_APPEND;
+    }
+    if flags.contains(FileFlags::CREATE) {
+        open_flags |= O_CREAT;
+    }
+
     // SAFETY: Invokes a system call and does not directly change any memory of
     // the process.
     unsafe {
-        syscall3(
+        syscall4(
             SYS_OPEN,
+            AT_FDCWD as i64 as u64,
             path.as_ptr() as u64,
-            mode.bits() as u64,
-            flags.bits() as u64,
+            open_flags.into(),
+            0,
         )
         .map(|ret| FsObjHandle(ObjHandle::new(ret as u32)))
     }

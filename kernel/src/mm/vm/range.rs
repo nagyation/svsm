@@ -453,6 +453,21 @@ impl VMR {
         Ok(node)
     }
 
+    /// Removes all mappings from the RBTree
+    ///
+    /// # Returns
+    ///
+    /// `Ok(())` on success, SvsmError::Mem on error
+    pub fn remove_all(&self) -> Result<(), SvsmError> {
+        loop {
+            let base = match self.tree.lock_read().front().get() {
+                Some(vmm) => vmm.range().0,
+                None => return Ok(()),
+            };
+            self.remove(base)?;
+        }
+    }
+
     /// Dump all [`VMM`] mappings in the RBTree. This function is included for
     /// debugging purposes. And should not be called in production code.
     pub fn dump_ranges(&self) {

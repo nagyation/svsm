@@ -12,10 +12,22 @@ use crate::locking::{RWLock, SpinLock};
 use crate::mm::PageRef;
 
 use core::cmp::min;
+use syscall::SeekMode;
 
 extern crate alloc;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
+
+/// Adds the signed offset of an lseek() to a base position.
+///
+/// Returns an error if the result would be negative or too large.
+pub(super) fn seek_target(base: usize, offset: i64) -> Result<usize, SvsmError> {
+    i64::try_from(base)
+        .ok()
+        .and_then(|base| base.checked_add(offset))
+        .and_then(|pos| usize::try_from(pos).ok())
+        .ok_or(SvsmError::FileSystem(FsError::inval()))
+}
 
 /// Represents a handle used for file operations in a thread-safe manner.
 #[derive(Debug)]
@@ -212,6 +224,33 @@ impl FileHandle {
         let mut current = self.current.lock();
         let pos = self.file.size().saturating_sub(offset);
         *current = pos;
+    }
+
+    /// Change the current file offset like the Linux lseek().
+    ///
+    /// The offset is added to the start of the file, the current file offset
+    /// or the end of the file, depending on the mode. Unlike the other seek
+    /// functions, the new file offset can be after the end of the file. Reading
+    /// there returns no data, and writing extends the file with zeros.
+    ///
+    /// # Arguments
+    ///
+    /// - `mode`: base the offset is added to.
+    /// - `offset`: signed value to add to the base.
+    ///
+    /// # Returns
+    ///
+    /// The new file offset, or an error if it would be negative or too large.
+    pub fn seek(&self, mode: SeekMode, offset: i64) -> Result<usize, SvsmError> {
+        let mut current = self.current.lock();
+        let base = match mode {
+            SeekMode::Absolute => 0,
+            SeekMode::Relative => *current,
+            SeekMode::End => self.file.size(),
+        };
+        let pos = seek_target(base, offset)?;
+        *current = pos;
+        Ok(pos)
     }
 
     /// Used to get the size of the file.

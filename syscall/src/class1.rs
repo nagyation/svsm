@@ -90,6 +90,11 @@ pub fn write(fd: &FsObjHandle, buffer: &[u8]) -> Result<usize, SysCallError> {
     }
 }
 
+/// Changes the file offset like lseek() and returns the new one. The offset
+/// is signed and added to the start of the file, the current offset or the
+/// end of the file, depending on the mode, so a negative offset with
+/// `SeekMode::End` goes back from the end. The new offset can be after the end
+/// of the file, but not negative.
 pub fn seek(fd: &FsObjHandle, offset: i64, mode: SeekMode) -> Result<u64, SysCallError> {
     // SAFETY: Invokes a system call and does not directly change any memory of
     // the process.

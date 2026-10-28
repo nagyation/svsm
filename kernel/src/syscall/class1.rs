@@ -83,13 +83,10 @@ pub fn sys_seek(obj_id: u32, offset: usize, raw_mode: usize) -> Result<u64, SysC
     let fs_obj = fs_obj.as_fs().ok_or(EOPNOTSUPP)?;
     let mode = SeekMode::try_from(raw_mode).map_err(|_| SvsmError::FileSystem(FsError::inval()))?;
 
-    let result = match mode {
-        SeekMode::Absolute => fs_obj.seek_abs(offset),
-        SeekMode::Relative => fs_obj.seek_rel(offset as isize),
-        SeekMode::End => fs_obj.seek_end(offset),
-    };
+    // The offset is signed, as on Linux.
+    let pos = fs_obj.seek(mode, offset as i64)?;
 
-    result.map(|p| p as u64).map_err(SysCallError::from)
+    Ok(pos as u64)
 }
 
 pub fn sys_truncate(obj_id: u32, length: usize) -> Result<u64, SysCallError> {

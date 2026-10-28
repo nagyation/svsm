@@ -12,6 +12,7 @@ use crate::syscall::Obj;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicUsize, Ordering};
+use syscall::SeekMode;
 
 #[derive(Debug)]
 struct DirectoryHandle {
@@ -70,31 +71,13 @@ impl FsObj {
         fh.write_buffer(buffer)
     }
 
-    pub fn seek_abs(&self, offset: usize) -> Result<usize, SvsmError> {
+    /// Changes the file offset like the Linux lseek() and returns it.
+    pub fn seek(&self, mode: SeekMode, offset: i64) -> Result<usize, SvsmError> {
         let FsObjEntry::File(fh) = &self.entry else {
             return Err(SvsmError::NotSupported);
         };
 
-        fh.seek_abs(offset);
-        Ok(fh.position())
-    }
-
-    pub fn seek_rel(&self, offset: isize) -> Result<usize, SvsmError> {
-        let FsObjEntry::File(fh) = &self.entry else {
-            return Err(SvsmError::NotSupported);
-        };
-
-        fh.seek_rel(offset);
-        Ok(fh.position())
-    }
-
-    pub fn seek_end(&self, offset: usize) -> Result<usize, SvsmError> {
-        let FsObjEntry::File(fh) = &self.entry else {
-            return Err(SvsmError::NotSupported);
-        };
-
-        fh.seek_end(offset);
-        Ok(fh.position())
+        fh.seek(mode, offset)
     }
 
     pub fn position(&self) -> Result<usize, SvsmError> {

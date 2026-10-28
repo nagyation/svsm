@@ -118,10 +118,175 @@ impl FsObj {
             Ok(None)
         }
     }
+
+    /// Returns the directory this object refers to.
+    ///
+    /// # Returns
+    ///
+    /// The directory, or `None` if this object refers to a file.
+    pub fn directory(&self) -> Option<Arc<dyn Directory>> {
+        match &self.entry {
+            FsObjEntry::Directory(dh) => Some(dh.dir.clone()),
+            FsObjEntry::File(_) => None,
+        }
+    }
+
+    /// Returns the position of the directory entry [`FsObj::readdir()`]
+    /// returns next.
+    ///
+    /// # Returns
+    ///
+    /// The position on success, `Err(SvsmError::NotSupported)` if this
+    /// object refers to a file.
+    pub fn dir_position(&self) -> Result<usize, SvsmError> {
+        let FsObjEntry::Directory(dh) = &self.entry else {
+            return Err(SvsmError::NotSupported);
+        };
+
+        Ok(dh.next.load(Ordering::Relaxed))
+    }
+
+    /// Sets the position of the directory entry [`FsObj::readdir()`]
+    /// returns next. Positions after the last entry are reduced to the
+    /// position after the last entry.
+    ///
+    /// # Arguments
+    ///
+    /// * `pos` - The new position.
+    ///
+    /// # Returns
+    ///
+    /// The new position on success, `Err(SvsmError::NotSupported)` if this
+    /// object refers to a file.
+    pub fn dir_seek(&self, pos: usize) -> Result<usize, SvsmError> {
+        let FsObjEntry::Directory(dh) = &self.entry else {
+            return Err(SvsmError::NotSupported);
+        };
+
+        let pos = pos.min(dh.list.len());
+        dh.next.store(pos, Ordering::Relaxed);
+        Ok(pos)
+    }
+
+    /// Returns the directory entry at a given position without changing the
+    /// position of the object.
+    ///
+    /// The entries are listed when the object is created. An entry that was
+    /// removed from the directory since then is reported as not found.
+    ///
+    /// # Arguments
+    ///
+    /// * `pos` - The position of the entry.
+    ///
+    /// # Returns
+    ///
+    /// The name and entry at `pos`, `Ok(None)` if `pos` is after the last
+    /// entry, or an [`SvsmError`] on failure.
+    pub fn dir_entry_at(&self, pos: usize) -> Result<Option<(FileName, DirEntry)>, SvsmError> {
+        let FsObjEntry::Directory(dh) = &self.entry else {
+            return Err(SvsmError::NotSupported);
+        };
+
+        let Some(name) = dh.list.get(pos) else {
+            return Ok(None);
+        };
+        let dirent = dh.dir.lookup_entry(name)?;
+        Ok(Some((name.clone(), dirent)))
+    }
 }
 
 impl Obj for FsObj {
     fn as_fs(&self) -> Option<&FsObj> {
         Some(self)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::fs::{
+        SliceMutRefBuffer, SliceRefBuffer, TestFileSystemGuard, create, mkdir, open_rw, opendir,
+        rmdir, unlink,
+    };
+    use crate::mm::alloc::{DEFAULT_TEST_MEMORY_SIZE, TestRootMem};
+
+    #[test]
+    #[cfg_attr(miri, ignore = "inline assembly")]
+    fn test_fsobj_append() {
+        let _test_mem = TestRootMem::setup(DEFAULT_TEST_MEMORY_SIZE);
+        let _test_fs = TestFileSystemGuard::setup();
+
+        create("fsobj_append").unwrap();
+        let obj = FsObj::new_file(open_rw("fsobj_append").unwrap().with_append());
+        obj.write_buffer(&SliceRefBuffer::new(b"ab")).unwrap();
+
+        // A write after seeking back still appends.
+        obj.seek(SeekMode::Absolute, 0).unwrap();
+        obj.write_buffer(&SliceRefBuffer::new(b"cd")).unwrap();
+        assert_eq!(obj.file_size().unwrap(), 4);
+
+        let mut buf = [0u8; 4];
+        obj.seek(SeekMode::Absolute, 0).unwrap();
+        obj.read_buffer(&mut SliceMutRefBuffer::new(&mut buf))
+            .unwrap();
+        assert_eq!(&buf, b"abcd");
+
+        // Appends through other handles do not overwrite each other, even if
+        // the offset of the handle is somewhere else.
+        let other = open_rw("fsobj_append").unwrap().with_append();
+        assert_eq!(other.write(b"ef").unwrap(), 2);
+        obj.write_buffer(&SliceRefBuffer::new(b"gh")).unwrap();
+        assert_eq!(other.write(b"ij").unwrap(), 2);
+        assert_eq!(obj.file_size().unwrap(), 10);
+
+        let mut buf = [0u8; 10];
+        obj.seek(SeekMode::Absolute, 0).unwrap();
+        obj.read_buffer(&mut SliceMutRefBuffer::new(&mut buf))
+            .unwrap();
+        assert_eq!(&buf, b"abcdefghij");
+
+        // Cleanup
+        unlink("fsobj_append").unwrap();
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "inline assembly")]
+    fn test_fsobj_dir_position() {
+        let _test_mem = TestRootMem::setup(DEFAULT_TEST_MEMORY_SIZE);
+        let _test_fs = TestFileSystemGuard::setup();
+
+        mkdir("fsobj_dir").unwrap();
+        create("fsobj_dir/file1").unwrap();
+        create("fsobj_dir/file2").unwrap();
+        let obj = FsObj::new_dir(&opendir("fsobj_dir").unwrap());
+        assert!(obj.directory().is_some());
+
+        // Reading an entry at a position does not move the position.
+        let (name, _) = obj.dir_entry_at(1).unwrap().unwrap();
+        assert_eq!(name, "file2");
+        assert!(obj.dir_entry_at(2).unwrap().is_none());
+        assert_eq!(obj.dir_position().unwrap(), 0);
+
+        // readdir() continues at a position set before.
+        assert_eq!(obj.dir_seek(1).unwrap(), 1);
+        let (name, _) = obj.readdir().unwrap().unwrap();
+        assert_eq!(name, "file2");
+        assert_eq!(obj.dir_position().unwrap(), 2);
+
+        // Positions are limited to the number of entries.
+        assert_eq!(obj.dir_seek(10).unwrap(), 2);
+
+        // Entries removed after the listing are not found.
+        unlink("fsobj_dir/file1").unwrap();
+        obj.dir_entry_at(0).unwrap_err();
+
+        // Files have no directory.
+        let file = FsObj::new_file(open_rw("fsobj_dir/file2").unwrap());
+        assert!(file.directory().is_none());
+        file.dir_position().unwrap_err();
+
+        // Cleanup
+        unlink("fsobj_dir/file2").unwrap();
+        rmdir("fsobj_dir").unwrap();
     }
 }

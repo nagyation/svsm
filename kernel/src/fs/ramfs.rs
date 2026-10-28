@@ -332,6 +332,14 @@ impl File for RamFile {
         self.rawfile.lock_write().write_buffer(buffer, file_offset)
     }
 
+    fn append_buffer(&self, buffer: &dyn Buffer) -> Result<(usize, usize), SvsmError> {
+        // Find the end and write with the file locked.
+        let mut rawfile = self.rawfile.lock_write();
+        let offset = rawfile.size();
+        let written = rawfile.write_buffer(buffer, offset)?;
+        Ok((offset, written))
+    }
+
     fn truncate(&self, size: usize) -> Result<usize, SvsmError> {
         self.rawfile.lock_write().truncate(size)
     }

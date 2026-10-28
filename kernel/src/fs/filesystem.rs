@@ -43,6 +43,8 @@ pub struct FileHandle {
     read: bool,
     /// True when file is open for writing
     write: bool,
+    /// True when every write goes to the end of the file
+    append: bool,
 }
 
 impl FileHandle {
@@ -53,7 +55,18 @@ impl FileHandle {
             current: SpinLock::new(0),
             read,
             write,
+            append: false,
         }
+    }
+
+    /// Makes every write of this handle go to the end of the file, wherever the
+    /// current file offset is, like the Linux `O_APPEND`. Finding the end and
+    /// writing is one step, so that appends from several handles do not
+    /// overwrite each other. The file offset is after the data that was
+    /// written.
+    pub fn with_append(mut self) -> Self {
+        self.append = true;
+        self
     }
 
     /// Check whether FileHandle is open for reading.
@@ -138,6 +151,10 @@ impl FileHandle {
     /// bytes written if successful, or an [`SvsmError`] if there was a problem
     /// during the write operation.
     pub fn write(&self, buf: &[u8]) -> Result<usize, SvsmError> {
+        if self.append {
+            return self.write_buffer(&SliceRefBuffer::new(buf));
+        }
+
         self.check_write()?;
         let mut current = self.current.lock();
         let result = self.file.write(buf, *current);
@@ -161,6 +178,12 @@ impl FileHandle {
     pub fn write_buffer(&self, buffer: &dyn Buffer) -> Result<usize, SvsmError> {
         self.check_write()?;
         let mut current = self.current.lock();
+        if self.append {
+            let (offset, written) = self.file.append_buffer(buffer)?;
+            *current = offset + written;
+            return Ok(written);
+        }
+
         let result = self.file.write_buffer(buffer, *current);
         if let Ok(bytes) = result {
             *current += bytes;

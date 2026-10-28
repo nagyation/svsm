@@ -148,6 +148,27 @@ pub trait File: Debug + Send + Sync {
         Err(SvsmError::FileSystem(FsError::not_supported()))
     }
 
+    /// Used to append the contents of a buffer to the end of the file.
+    ///
+    /// A file system that can lock the file should do finding the end and
+    /// writing in one step, so that appends from several handles do not
+    /// overwrite each other. This default does not.
+    ///
+    /// # Arguments
+    ///
+    /// - `buffer`: buffer which holds the contents to be written.
+    ///
+    /// # Returns
+    ///
+    /// [`Result<(usize, usize), SvsmError>`]: A [`Result`] containing the
+    /// offset the data was written at and the number of bytes written if
+    /// successful, or an [`SvsmError`] if the write failed.
+    fn append_buffer(&self, buffer: &dyn Buffer) -> Result<(usize, usize), SvsmError> {
+        let offset = self.size();
+        let written = self.write_buffer(buffer, offset)?;
+        Ok((offset, written))
+    }
+
     /// Used to truncate the file to the specified size. A size larger than the
     /// current one extends the file with zeros.
     ///

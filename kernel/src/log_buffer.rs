@@ -12,6 +12,7 @@ use crate::syscall::{ObjHandle, obj_get};
 use crate::utils::immut_after_init::ImmutAfterInitCell;
 use core::fmt;
 use release::COCONUT_VERSION;
+use syscall::STDOUT_FILENO;
 
 fn print_warning(_e: SvsmError) {
     _print(format_args!("ERROR: logging failed\n"));
@@ -28,7 +29,7 @@ impl LogBuffer {
 impl fmt::Write for LogBuffer {
     /// Writes all bytes from the slice to the log buffer
     fn write_str(&mut self, s: &str) -> fmt::Result {
-        let obj_handle = ObjHandle::new(0);
+        let obj_handle = ObjHandle::new(STDOUT_FILENO);
         let buf = SliceRefBuffer::new(s.as_bytes());
         let fs = obj_get(obj_handle).map_err(print_warning).unwrap();
         let fs = fs

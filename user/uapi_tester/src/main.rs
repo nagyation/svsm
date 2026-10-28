@@ -22,6 +22,9 @@ fn main() -> u32 {
 }
 
 #[cfg(test)]
+mod fd;
+
+#[cfg(test)]
 mod syscall;
 
 #[cfg(test)]

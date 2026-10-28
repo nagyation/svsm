@@ -16,5 +16,5 @@ pub use api::*;
 pub use buffer::*;
 pub use filesystem::*;
 pub use init::populate_ram_fs;
-pub use log_buffer::{initialize_log_buffer, log_read, stdout_open};
+pub use log_buffer::{initialize_log_buffer, log_read, stdin_open, stdout_open};
 pub use obj::FsObj;

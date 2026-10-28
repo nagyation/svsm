@@ -13,7 +13,7 @@ use userlib::{SYS_CAPABILITIES, SysCallError};
 const SYS_INVALID: u64 = 0xdead_beef;
 
 /// Issues a system call with one argument using the `syscall` instruction.
-fn syscall_insn(nr: u64, arg: u64) -> u64 {
+pub(crate) fn syscall_insn(nr: u64, arg: u64) -> u64 {
     let ret: u64;
     // SAFETY: only used for system calls that do not access user memory.
     // The registers clobbered by the instruction are declared.
@@ -22,6 +22,27 @@ fn syscall_insn(nr: u64, arg: u64) -> u64 {
             "syscall",
             inout("rax") nr => ret,
             in("rdi") arg,
+            out("rcx") _,
+            out("r11") _,
+            options(nostack),
+        );
+    }
+    ret
+}
+
+/// Issues a system call with three arguments using the `syscall` instruction.
+pub(crate) fn syscall_insn3(nr: u64, arg1: u64, arg2: u64, arg3: u64) -> u64 {
+    let ret: u64;
+    // SAFETY: only used for system calls that access the memory of the
+    // process the way the caller of this function intends. The registers
+    // clobbered by the instruction are declared.
+    unsafe {
+        asm!(
+            "syscall",
+            inout("rax") nr => ret,
+            in("rdi") arg1,
+            in("rsi") arg2,
+            in("r8") arg3,
             out("rcx") _,
             out("r11") _,
             options(nostack),

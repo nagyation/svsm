@@ -5,7 +5,8 @@
 // Author: Joerg Roedel <jroedel@suse.de>
 
 use bitflags::bitflags;
-use zerocopy::IntoBytes;
+use core::mem::size_of;
+use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
 
 // Syscall classes
 const CLASS0: u64 = 0;
@@ -144,6 +145,46 @@ impl TryFrom<usize> for SeekMode {
     }
 }
 
+/// Type of a directory entry returned by the readdir system call, for a
+/// directory.
+pub const DT_DIR: u8 = 4;
+/// Type of a directory entry returned by the readdir system call, for a
+/// regular file.
+pub const DT_REG: u8 = 8;
+
+/// Fixed-size header of a directory entry returned by the readdir system
+/// call, which works like Linux `getdents64()`. The NUL-terminated entry name
+/// directly follows the header, and the entry is padded so that the next
+/// entry is aligned to 8 bytes.
+///
+/// This mirrors `struct linux_dirent64`, whose name is a flexible array
+/// member starting right after `d_type`. The structure is packed so that its
+/// size equals the offset of the name.
+#[repr(C, packed)]
+#[derive(Clone, Copy, Debug, Default, FromBytes, IntoBytes, Immutable, KnownLayout)]
+pub struct Dirent64Header {
+    /// Inode number of the entry
+    pub d_ino: u64,
+    /// Opaque position of the next entry in the directory
+    pub d_off: i64,
+    /// Total size of this entry, including the name and padding
+    pub d_reclen: u16,
+    /// Type of the entry, one of the `DT_*` values
+    pub d_type: u8,
+}
+
+impl Dirent64Header {
+    /// Alignment of directory entries in the buffer.
+    pub const ALIGN: usize = 8;
+
+    /// Returns the record length of an entry with a name of `name_len`
+    /// bytes, excluding the terminating NUL.
+    pub const fn reclen(name_len: usize) -> usize {
+        (size_of::<Self>() + name_len + 1).next_multiple_of(Self::ALIGN)
+    }
+}
+
+/// A directory entry, as returned by the user space `readdir()`.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, IntoBytes)]
 pub struct DirEnt {
@@ -151,9 +192,6 @@ pub struct DirEnt {
     pub file_name: [u8; F_NAME_SIZE],
     /// Entry type
     pub file_type: FileType,
-    _pad: [u8; 7],
-    /// File size - 0 for directories
-    pub file_size: u64,
 }
 
 impl Default for DirEnt {
@@ -161,9 +199,22 @@ impl Default for DirEnt {
         DirEnt {
             file_name: [b'\0'; F_NAME_SIZE],
             file_type: FileType::File,
-            _pad: [0; 7],
-            file_size: 0,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_dirent64_reclen() {
+        // 19-byte header, name, NUL, padded to 8 bytes.
+        assert_eq!(size_of::<Dirent64Header>(), 19);
+        assert_eq!(Dirent64Header::reclen(0), 24);
+        assert_eq!(Dirent64Header::reclen(4), 24);
+        assert_eq!(Dirent64Header::reclen(5), 32);
+        assert_eq!(Dirent64Header::reclen(255), 280);
     }
 }
 

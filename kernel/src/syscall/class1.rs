@@ -14,14 +14,14 @@ use crate::fs::{
     DirEntry, Directory, FileHandle, FsError, FsObj, UserBuffer, create_file_root, lookup_root,
     mkdir_root, rmdir_root, unlink_root,
 };
-use crate::mm::guestmem::UserPtr;
+use crate::mm::guestmem::{UserPtr, copy_to_user};
 use alloc::string::String;
 use alloc::sync::Arc;
-use core::cmp::min;
+use alloc::vec;
 use core::ffi::c_char;
-use core::str;
 use syscall::SysCallError::*;
 use syscall::*;
+use zerocopy::IntoBytes;
 
 /// Reads a path passed by user mode.
 fn user_path(path: usize) -> Result<String, SysCallError> {
@@ -205,42 +205,68 @@ pub fn sys_unlink(dirfd: usize, path: usize, flags: usize) -> Result<u64, SysCal
     Ok(0)
 }
 
-pub fn sys_readdir(obj_id: u32, dirents: usize, size: usize) -> Result<u64, SysCallError> {
-    let fsobj = obj_get(obj_id.into())?;
-    let fsobj = fsobj.as_fs().ok_or(EOPNOTSUPP)?;
-    let user_dirents = UserPtr::<[DirEnt]>::new(VirtAddr::from(dirents), size)?;
+pub fn sys_readdir(obj_id: u32, dirp: usize, count: usize) -> Result<u64, SysCallError> {
+    let obj = obj_get(obj_id.into())?;
+    let fs_obj = obj
+        .as_fs()
+        .filter(|fs_obj| fs_obj.directory().is_some())
+        .ok_or(ENOTDIR)?;
+    let buf = VirtAddr::from(dirp);
+    // The count is an `unsigned int`, so only the low 32 bits are used.
+    let count = count as u32 as usize;
 
-    for i in 0..size {
-        let Some((name, dirent)) = fsobj.readdir()? else {
-            return Ok(i as u64);
+    let mut pos = fs_obj.dir_position()?;
+    let mut written = 0;
+    loop {
+        let (name, entry) = match fs_obj.dir_entry_at(pos) {
+            Ok(Some(dirent)) => dirent,
+            Ok(None) => break,
+            // The entry was removed since the directory was opened.
+            Err(SvsmError::FileSystem(FsError::FileNotFound)) => {
+                pos += 1;
+                continue;
+            }
+            Err(err) => return Err(err.into()),
         };
 
-        let mut new_entry = DirEnt::default();
-        // DirEnt.file_name must be nul-terminated
-        let bound = (0..min(name.len() + 1, new_entry.file_name.len()))
-            .rposition(|i| name.is_char_boundary(i))
-            .ok_or(EINVAL)?;
-        new_entry.file_name[..bound].copy_from_slice(&name.as_bytes()[..bound]);
-        if bound != name.len() {
-            // Use unwrap() here since SVSM's filesystem should guarantee
-            // that file names are valid UTF-8
-            log::info!(
-                "sys_readdir: truncation detected: {}",
-                str::from_utf8(&new_entry.file_name[..bound]).unwrap()
-            );
+        let reclen = Dirent64Header::reclen(name.len());
+        let d_reclen = u16::try_from(reclen).map_err(|_| ENAMETOOLONG)?;
+        if reclen > count - written {
+            // Like Linux, fail if not even a single entry fits.
+            if written == 0 {
+                return Err(EINVAL);
+            }
+            break;
         }
 
-        if let DirEntry::File(f) = dirent {
-            new_entry.file_type = FileType::File;
-            new_entry.file_size = f.size().try_into().unwrap();
-        } else {
-            new_entry.file_type = FileType::Directory;
-            new_entry.file_size = 0;
+        // The SVSM file system has no inode numbers, so report the position
+        // of the entry, which is never 0 like a deleted entry. The offset is
+        // the position of the next entry, as lseek() uses it for
+        // directories.
+        let header = Dirent64Header {
+            d_ino: pos as u64 + 1,
+            d_off: pos as i64 + 1,
+            d_reclen,
+            d_type: if entry.is_dir() { DT_DIR } else { DT_REG },
+        };
+        let name_start = header.as_bytes().len();
+        let mut record = vec![0u8; reclen];
+        record[..name_start].copy_from_slice(header.as_bytes());
+        record[name_start..name_start + name.len()].copy_from_slice(name.as_bytes());
+        match copy_to_user(&record, buf + written) {
+            Ok(()) => {}
+            // Like Linux, report the entries that were written before.
+            Err(_) if written > 0 => break,
+            Err(err) => return Err(err.into()),
         }
 
-        user_dirents.write(i, new_entry)?;
+        written += reclen;
+        pos += 1;
     }
-    Ok(size as u64)
+
+    fs_obj.dir_seek(pos)?;
+
+    Ok(written as u64)
 }
 
 pub fn sys_mkdir(dirfd: usize, path: usize, _mode: usize) -> Result<u64, SysCallError> {

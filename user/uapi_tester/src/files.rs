@@ -9,10 +9,11 @@
 use super::syscall::{syscall_insn, syscall_insn3, syscall_insn4};
 use core::ffi::CStr;
 use userlib::{
-    AT_FDCWD, AT_REMOVEDIR, FileFlags, FileModes, O_ACCMODE, O_APPEND, O_CREAT, O_DIRECTORY,
-    O_EXCL, O_RDONLY, O_RDWR, O_TRUNC, O_WRONLY, SYS_CLOSE, SYS_MKDIR, SYS_OPEN, SYS_READ,
-    SYS_SEEK, SYS_TRUNCATE, SYS_UNLINK, SYS_WRITE, SeekMode, SysCallError, mkdir, open, opendir,
-    read, rmdir, seek, truncate, unlink, write,
+    AT_FDCWD, AT_REMOVEDIR, DT_DIR, DT_REG, DirEnt, FileFlags, FileModes, FileType, O_ACCMODE,
+    O_APPEND, O_CREAT, O_DIRECTORY, O_EXCL, O_RDONLY, O_RDWR, O_TRUNC, O_WRONLY, SYS_CLOSE,
+    SYS_MKDIR, SYS_OPEN, SYS_READ, SYS_READDIR, SYS_SEEK, SYS_TRUNCATE, SYS_UNLINK, SYS_WRITE,
+    SeekMode, SysCallError, mkdir, open, opendir, read, readdir, rmdir, seek, truncate, unlink,
+    write,
 };
 
 /// Opens a path with the open system call, which works like `openat()`, and
@@ -453,5 +454,128 @@ fn test_opendir() {
     assert_eq!(opendir(file).err(), Some(SysCallError::ENOTDIR));
 
     unlink(file).unwrap();
+    rmdir(dir).unwrap();
+}
+
+/// Creates the file `name` in the directory `dir`, which must exist.
+fn create_file(path: &CStr) {
+    let fd = raw_open(AT_FDCWD, path, O_RDWR | O_CREAT | O_EXCL);
+    assert!(fd >= 0);
+    raw_close(fd);
+}
+
+/// Checks listing a directory with readdir(): the entries come with their
+/// type in batches of any size, the end is reported with 0 entries, and a
+/// directory can be listed again after seeking to its start.
+#[test]
+#[cfg_attr(not(test_in_svsm), ignore = "Can only be run inside guest")]
+fn test_readdir() {
+    let dir = c"/test_readdir";
+    mkdir(dir).unwrap();
+    create_file(c"/test_readdir/a");
+    create_file(c"/test_readdir/b");
+    mkdir(c"/test_readdir/sub").unwrap();
+
+    let handle = opendir(dir).unwrap();
+    for round in 0..2 {
+        // The batches of two entries leave an entry for the next call.
+        let mut seen = [false; 3];
+        let mut entries = [DirEnt::default(); 2];
+        let mut batches = 0;
+        loop {
+            let n = readdir(&handle, &mut entries).unwrap();
+            if n == 0 {
+                break;
+            }
+            batches += 1;
+            for entry in &entries[..n] {
+                let name = CStr::from_bytes_until_nul(&entry.file_name).unwrap();
+                let (index, file_type) = match name.to_bytes() {
+                    b"a" => (0, FileType::File),
+                    b"b" => (1, FileType::File),
+                    b"sub" => (2, FileType::Directory),
+                    other => panic!("unexpected entry {other:?} in round {round}"),
+                };
+                assert_eq!(entry.file_type, file_type);
+                assert!(!seen[index]);
+                seen[index] = true;
+            }
+        }
+        assert_eq!(seen, [true; 3]);
+        assert_eq!(batches, 2);
+
+        // List the directory again.
+        assert_eq!(seek(&handle, 0, SeekMode::Absolute), Ok(0));
+    }
+    // The end of a directory has no meaning.
+    assert_eq!(seek(&handle, 0, SeekMode::End), Err(SysCallError::EINVAL));
+    drop(handle);
+
+    unlink(c"/test_readdir/a").unwrap();
+    unlink(c"/test_readdir/b").unwrap();
+    rmdir(c"/test_readdir/sub").unwrap();
+    rmdir(dir).unwrap();
+}
+
+/// Checks the records of the readdir system call, which follow Linux
+/// `getdents64()`: the header, the name and the padding to 8 bytes, the type,
+/// and the offset of the next entry. A buffer that does not fit a single entry
+/// is EINVAL, and a file is not a directory.
+#[test]
+#[cfg_attr(not(test_in_svsm), ignore = "Can only be run inside guest")]
+fn test_getdents_records() {
+    let dir = c"/test_getdents_records";
+    mkdir(dir).unwrap();
+    create_file(c"/test_getdents_records/x");
+    create_file(c"/test_getdents_records/y");
+    mkdir(c"/test_getdents_records/d").unwrap();
+
+    let dirfd = raw_open(AT_FDCWD, dir, O_RDONLY | O_DIRECTORY) as u64;
+    let mut buf = [0u8; 256];
+    let ptr = buf.as_mut_ptr() as u64;
+
+    let ret = syscall_insn3(SYS_READDIR, dirfd, ptr, 8);
+    assert_eq!(ret as i64, err(SysCallError::EINVAL));
+
+    // Each entry has a 19 byte header and a name of one byte, which makes
+    // 24 bytes with the NUL and the padding.
+    let len = syscall_insn3(SYS_READDIR, dirfd, ptr, buf.len() as u64) as usize;
+    assert_eq!(len, 3 * 24);
+    let mut pos = 0;
+    let mut count = 0;
+    while pos < len {
+        let d_off = i64::from_le_bytes(buf[pos + 8..pos + 16].try_into().unwrap());
+        let reclen = usize::from(u16::from_le_bytes(
+            buf[pos + 16..pos + 18].try_into().unwrap(),
+        ));
+        let d_type = buf[pos + 18];
+        let name = &buf[pos + 19..pos + reclen];
+        let name_len = name.iter().position(|&c| c == 0).unwrap();
+
+        assert_eq!(reclen, 24);
+        assert_eq!(name_len, 1);
+        assert_eq!(d_type, if name[0] == b'd' { DT_DIR } else { DT_REG });
+        count += 1;
+        assert_eq!(d_off, count);
+        pos += reclen;
+    }
+    // The end of the directory.
+    assert_eq!(syscall_insn3(SYS_READDIR, dirfd, ptr, buf.len() as u64), 0);
+
+    // Seeking to the start lists the entries again, here only one that fits.
+    assert_eq!(syscall_insn3(SYS_SEEK, dirfd, 0, 0), 0);
+    assert_eq!(syscall_insn3(SYS_READDIR, dirfd, ptr, 24), 24);
+    // The position is the offset of the entry that was returned.
+    assert_eq!(syscall_insn3(SYS_SEEK, dirfd, 0, 1), 1);
+    raw_close(dirfd as i64);
+
+    let file = raw_open(AT_FDCWD, c"/test_getdents_records/x", O_RDONLY);
+    let ret = syscall_insn3(SYS_READDIR, file as u64, ptr, buf.len() as u64);
+    assert_eq!(ret as i64, err(SysCallError::ENOTDIR));
+    raw_close(file);
+
+    unlink(c"/test_getdents_records/x").unwrap();
+    unlink(c"/test_getdents_records/y").unwrap();
+    rmdir(c"/test_getdents_records/d").unwrap();
     rmdir(dir).unwrap();
 }

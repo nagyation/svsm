@@ -6,7 +6,8 @@
 
 extern crate alloc;
 
-use super::{Buffer, DirEntry, Directory, FileHandle, FileName};
+use super::filesystem::seek_target;
+use super::{Buffer, DirEntry, Directory, FileHandle, FileName, FsError};
 use crate::error::SvsmError;
 use crate::syscall::Obj;
 use alloc::sync::Arc;
@@ -72,28 +73,23 @@ impl FsObj {
     }
 
     /// Changes the file offset like the Linux lseek() and returns it.
+    ///
+    /// The offset of a directory is the position of the next entry. It can be
+    /// set to the start of the directory or relative to the current
+    /// position, and stops after the last entry.
     pub fn seek(&self, mode: SeekMode, offset: i64) -> Result<usize, SvsmError> {
-        let FsObjEntry::File(fh) = &self.entry else {
-            return Err(SvsmError::NotSupported);
-        };
-
-        fh.seek(mode, offset)
-    }
-
-    pub fn position(&self) -> Result<usize, SvsmError> {
-        let FsObjEntry::File(fh) = &self.entry else {
-            return Err(SvsmError::NotSupported);
-        };
-
-        Ok(fh.position())
-    }
-
-    pub fn file_size(&self) -> Result<usize, SvsmError> {
-        let FsObjEntry::File(fh) = &self.entry else {
-            return Err(SvsmError::NotSupported);
-        };
-
-        Ok(fh.size())
+        match &self.entry {
+            FsObjEntry::File(fh) => fh.seek(mode, offset),
+            FsObjEntry::Directory(dh) => {
+                let base = match mode {
+                    SeekMode::Absolute => 0,
+                    SeekMode::Relative => dh.next.load(Ordering::Relaxed),
+                    // The end of a directory has no meaning.
+                    SeekMode::End => return Err(SvsmError::FileSystem(FsError::inval())),
+                };
+                self.dir_seek(seek_target(base, offset)?)
+            }
+        }
     }
 
     pub fn truncate(&self, length: usize) -> Result<usize, SvsmError> {
@@ -102,21 +98,6 @@ impl FsObj {
         };
 
         fh.truncate(length)
-    }
-
-    pub fn readdir(&self) -> Result<Option<(FileName, DirEntry)>, SvsmError> {
-        let FsObjEntry::Directory(dh) = &self.entry else {
-            return Err(SvsmError::NotSupported);
-        };
-
-        let next = dh.next.fetch_add(1, Ordering::Relaxed);
-        if let Some(name) = dh.list.get(next) {
-            let dirent = dh.dir.lookup_entry(name)?;
-            Ok(Some((name.clone(), dirent)))
-        } else {
-            dh.next.fetch_sub(1, Ordering::Relaxed);
-            Ok(None)
-        }
     }
 
     /// Returns the directory this object refers to.
@@ -223,7 +204,7 @@ mod tests {
         // A write after seeking back still appends.
         obj.seek(SeekMode::Absolute, 0).unwrap();
         obj.write_buffer(&SliceRefBuffer::new(b"cd")).unwrap();
-        assert_eq!(obj.file_size().unwrap(), 4);
+        assert_eq!(obj.seek(SeekMode::End, 0).unwrap(), 4);
 
         let mut buf = [0u8; 4];
         obj.seek(SeekMode::Absolute, 0).unwrap();
@@ -237,7 +218,7 @@ mod tests {
         assert_eq!(other.write(b"ef").unwrap(), 2);
         obj.write_buffer(&SliceRefBuffer::new(b"gh")).unwrap();
         assert_eq!(other.write(b"ij").unwrap(), 2);
-        assert_eq!(obj.file_size().unwrap(), 10);
+        assert_eq!(obj.seek(SeekMode::End, 0).unwrap(), 10);
 
         let mut buf = [0u8; 10];
         obj.seek(SeekMode::Absolute, 0).unwrap();
@@ -267,11 +248,11 @@ mod tests {
         assert!(obj.dir_entry_at(2).unwrap().is_none());
         assert_eq!(obj.dir_position().unwrap(), 0);
 
-        // readdir() continues at a position set before.
+        // The position is the entry that is read next.
         assert_eq!(obj.dir_seek(1).unwrap(), 1);
-        let (name, _) = obj.readdir().unwrap().unwrap();
+        assert_eq!(obj.dir_position().unwrap(), 1);
+        let (name, _) = obj.dir_entry_at(1).unwrap().unwrap();
         assert_eq!(name, "file2");
-        assert_eq!(obj.dir_position().unwrap(), 2);
 
         // Positions are limited to the number of entries.
         assert_eq!(obj.dir_seek(10).unwrap(), 2);

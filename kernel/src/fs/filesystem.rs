@@ -412,7 +412,7 @@ where
     for item in path_items {
         let dir_entry = current_dir.lookup_entry(item)?;
         current_dir = match dir_entry {
-            DirEntry::File(_) => return Err(SvsmError::FileSystem(FsError::file_not_found())),
+            DirEntry::File(_) => return Err(SvsmError::FileSystem(FsError::is_file())),
             DirEntry::Directory(dir) => dir,
         };
     }
@@ -472,7 +472,7 @@ where
             Err(_) => DirEntry::Directory(current_dir.create_directory(dir_name)?),
         };
         current_dir = match dir_entry {
-            DirEntry::File(_) => return Err(SvsmError::FileSystem(FsError::file_not_found())),
+            DirEntry::File(_) => return Err(SvsmError::FileSystem(FsError::is_file())),
             DirEntry::Directory(dir) => dir,
         };
     }
@@ -507,7 +507,7 @@ pub fn open_root(
     let dir_entry = current_dir.lookup_entry(file_name)?;
 
     match dir_entry {
-        DirEntry::Directory(_) => Err(SvsmError::FileSystem(FsError::file_not_found())),
+        DirEntry::Directory(_) => Err(SvsmError::FileSystem(FsError::is_dir())),
         DirEntry::File(f) => Ok(FileHandle::new(&f, read, write)),
     }
 }
@@ -1079,6 +1079,34 @@ mod tests {
         // Cleanup
         unlink("test1/file1").unwrap();
         rmdir("test1").unwrap();
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "inline assembly")]
+    fn test_path_type_errors() {
+        let _test_mem = TestRootMem::setup(DEFAULT_TEST_MEMORY_SIZE);
+        let _test_fs = TestFileSystemGuard::setup();
+
+        mkdir("dir").unwrap();
+        create("dir/file").unwrap();
+
+        // A directory is not a file.
+        let err = open_rw("dir").unwrap_err();
+        assert!(matches!(err, SvsmError::FileSystem(FsError::IsDir)));
+
+        // A file in the middle of a path is not a directory.
+        let err = open_rw("dir/file/other").unwrap_err();
+        assert!(matches!(err, SvsmError::FileSystem(FsError::IsFile)));
+        let err = mkdir("dir/file/other").unwrap_err();
+        assert!(matches!(err, SvsmError::FileSystem(FsError::IsFile)));
+
+        // A path that does not exist is not found.
+        let err = open_rw("dir/other").unwrap_err();
+        assert!(matches!(err, SvsmError::FileSystem(FsError::FileNotFound)));
+
+        // Cleanup
+        unlink("dir/file").unwrap();
+        rmdir("dir").unwrap();
     }
 
     #[test]

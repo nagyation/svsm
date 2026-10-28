@@ -6,8 +6,8 @@
 
 use super::call::{SysCallError, syscall1, syscall2, syscall3, syscall4};
 use super::def::{
-    AT_FDCWD, FileFlags, FileModes, O_APPEND, O_CREAT, O_RDONLY, O_RDWR, O_TRUNC, O_WRONLY,
-    SYS_MKDIR, SYS_OPEN, SYS_OPENDIR, SYS_READ, SYS_READDIR, SYS_RMDIR, SYS_SEEK, SYS_TRUNCATE,
+    AT_FDCWD, AT_REMOVEDIR, FileFlags, FileModes, O_APPEND, O_CREAT, O_RDONLY, O_RDWR, O_TRUNC,
+    O_WRONLY, SYS_MKDIR, SYS_OPEN, SYS_OPENDIR, SYS_READ, SYS_READDIR, SYS_SEEK, SYS_TRUNCATE,
     SYS_UNLINK, SYS_WRITE, SeekMode,
 };
 use super::{DirEnt, Obj, ObjHandle};
@@ -131,20 +131,31 @@ pub fn truncate(fd: &FsObjHandle, length: u64) -> Result<u64, SysCallError> {
     unsafe { syscall2(SYS_TRUNCATE, fd.id().into(), length) }
 }
 
+/// Removes a file with the Linux `unlinkat()` system call.
 pub fn unlink(path: &CStr) -> Result<(), SysCallError> {
     // SAFETY: Invokes a system call and does not directly change any memory of
     // the process.
-    unsafe { syscall1(SYS_UNLINK, path.as_ptr() as u64).map(|_| ()) }
+    unsafe { syscall3(SYS_UNLINK, AT_FDCWD as i64 as u64, path.as_ptr() as u64, 0).map(|_| ()) }
 }
 
+/// Creates a directory with the Linux `mkdirat()` system call.
 pub fn mkdir(path: &CStr) -> Result<(), SysCallError> {
     // SAFETY: Invokes a system call and does not directly change any memory of
     // the process.
-    unsafe { syscall1(SYS_MKDIR, path.as_ptr() as u64).map(|_| ()) }
+    unsafe { syscall3(SYS_MKDIR, AT_FDCWD as i64 as u64, path.as_ptr() as u64, 0).map(|_| ()) }
 }
 
+/// Removes a directory with the Linux `unlinkat()` system call.
 pub fn rmdir(path: &CStr) -> Result<(), SysCallError> {
     // SAFETY: Invokes a system call and does not directly change any memory of
     // the process.
-    unsafe { syscall1(SYS_RMDIR, path.as_ptr() as u64).map(|_| ()) }
+    unsafe {
+        syscall3(
+            SYS_UNLINK,
+            AT_FDCWD as i64 as u64,
+            path.as_ptr() as u64,
+            AT_REMOVEDIR.into(),
+        )
+        .map(|_| ())
+    }
 }

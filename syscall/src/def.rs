@@ -27,7 +27,6 @@ pub const SYS_UNLINK: u64 = CLASS1 + 5;
 pub const SYS_OPENDIR: u64 = CLASS1 + 6;
 pub const SYS_READDIR: u64 = CLASS1 + 7;
 pub const SYS_MKDIR: u64 = CLASS1 + 8;
-pub const SYS_RMDIR: u64 = CLASS1 + 9;
 
 // Syscall number in class3
 pub const SYS_CAPABILITIES: u64 = CLASS3;
@@ -53,6 +52,9 @@ pub const O_TRUNC: u32 = 0o1000;
 pub const O_APPEND: u32 = 0o2000;
 /// Fail if the path is not a directory
 pub const O_DIRECTORY: u32 = 0o200000;
+
+/// Flag of the unlink system call to remove a directory
+pub const AT_REMOVEDIR: u32 = 0x200;
 
 /// Directory descriptor of the `*at()` system calls that stands for the
 /// working directory of the task, which is its root directory

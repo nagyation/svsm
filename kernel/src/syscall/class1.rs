@@ -187,11 +187,20 @@ pub fn sys_truncate(obj_id: u32, length: usize) -> Result<u64, SysCallError> {
     Ok(0)
 }
 
-pub fn sys_unlink(path: usize) -> Result<u64, SysCallError> {
-    let user_path_ptr = UserPtr::<c_char>::new(VirtAddr::from(path))?;
-    let user_path = user_path_ptr.read_c_string()?;
+pub fn sys_unlink(dirfd: usize, path: usize, flags: usize) -> Result<u64, SysCallError> {
+    // The flags are an `int`, and AT_REMOVEDIR is the only one there is.
+    let flags = flags as u32;
+    if flags & !AT_REMOVEDIR != 0 {
+        return Err(EINVAL);
+    }
+    let path = user_path(path)?;
+    let base = base_dir(dirfd, &path)?;
 
-    unlink_root(current_task().rootdir(), &user_path).map_err(SysCallError::from)?;
+    if flags & AT_REMOVEDIR != 0 {
+        rmdir_root(base, &path)?;
+    } else {
+        unlink_root(base, &path)?;
+    }
 
     Ok(0)
 }
@@ -243,20 +252,11 @@ pub fn sys_readdir(obj_id: u32, dirents: usize, size: usize) -> Result<u64, SysC
     Ok(size as u64)
 }
 
-pub fn sys_mkdir(path: usize) -> Result<u64, SysCallError> {
-    let user_path_ptr = UserPtr::<c_char>::new(VirtAddr::from(path))?;
-    let user_path = user_path_ptr.read_c_string()?;
+pub fn sys_mkdir(dirfd: usize, path: usize, _mode: usize) -> Result<u64, SysCallError> {
+    let path = user_path(path)?;
+    let base = base_dir(dirfd, &path)?;
 
-    mkdir_root(current_task().rootdir(), &user_path).map_err(SysCallError::from)?;
-
-    Ok(0)
-}
-
-pub fn sys_rmdir(path: usize) -> Result<u64, SysCallError> {
-    let user_path_ptr = UserPtr::<c_char>::new(VirtAddr::from(path))?;
-    let user_path = user_path_ptr.read_c_string()?;
-
-    rmdir_root(current_task().rootdir(), &user_path).map_err(SysCallError::from)?;
+    mkdir_root(base, &path)?;
 
     Ok(0)
 }

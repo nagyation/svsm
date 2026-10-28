@@ -9,9 +9,10 @@
 use super::syscall::{syscall_insn, syscall_insn3, syscall_insn4};
 use core::ffi::CStr;
 use userlib::{
-    AT_FDCWD, FileFlags, FileModes, O_ACCMODE, O_APPEND, O_CREAT, O_DIRECTORY, O_EXCL, O_RDONLY,
-    O_RDWR, O_TRUNC, O_WRONLY, SYS_CLOSE, SYS_OPEN, SYS_READ, SYS_SEEK, SYS_TRUNCATE, SYS_WRITE,
-    SeekMode, SysCallError, mkdir, open, opendir, read, rmdir, seek, truncate, unlink, write,
+    AT_FDCWD, AT_REMOVEDIR, FileFlags, FileModes, O_ACCMODE, O_APPEND, O_CREAT, O_DIRECTORY,
+    O_EXCL, O_RDONLY, O_RDWR, O_TRUNC, O_WRONLY, SYS_CLOSE, SYS_MKDIR, SYS_OPEN, SYS_READ,
+    SYS_SEEK, SYS_TRUNCATE, SYS_UNLINK, SYS_WRITE, SeekMode, SysCallError, mkdir, open, opendir,
+    read, rmdir, seek, truncate, unlink, write,
 };
 
 /// Opens a path with the open system call, which works like `openat()`, and
@@ -359,5 +360,75 @@ fn test_open_directory() {
     raw_close(filefd);
 
     unlink(file).unwrap();
+    rmdir(dir).unwrap();
+}
+
+/// Checks the errors of creating and removing directories and files, which
+/// follow Linux: EEXIST, ENOENT, ENOTDIR, EISDIR and ENOTEMPTY.
+#[test]
+#[cfg_attr(not(test_in_svsm), ignore = "Can only be run inside guest")]
+fn test_mkdir_unlink_errors() {
+    let dir = c"/test_mkdir_unlink_errors";
+    let file = c"/test_mkdir_unlink_errors/file";
+
+    mkdir(dir).unwrap();
+    assert_eq!(mkdir(dir), Err(SysCallError::EEXIST));
+    assert_eq!(mkdir(c"/no_such_dir/sub"), Err(SysCallError::ENOENT));
+
+    let fd = raw_open(AT_FDCWD, file, O_RDWR | O_CREAT);
+    assert!(fd >= 0);
+    raw_close(fd);
+    assert_eq!(
+        mkdir(c"/test_mkdir_unlink_errors/file/sub"),
+        Err(SysCallError::ENOTDIR)
+    );
+
+    // A directory is removed with AT_REMOVEDIR, a file without it.
+    assert_eq!(unlink(dir), Err(SysCallError::EISDIR));
+    assert_eq!(rmdir(file), Err(SysCallError::ENOTDIR));
+    assert_eq!(rmdir(dir), Err(SysCallError::ENOTEMPTY));
+
+    unlink(file).unwrap();
+    assert_eq!(unlink(file), Err(SysCallError::ENOENT));
+    rmdir(dir).unwrap();
+    assert_eq!(rmdir(dir), Err(SysCallError::ENOENT));
+}
+
+/// Checks that mkdirat() and unlinkat() resolve a relative path from the
+/// directory descriptor, and that unlinkat() accepts only AT_REMOVEDIR.
+#[test]
+#[cfg_attr(not(test_in_svsm), ignore = "Can only be run inside guest")]
+fn test_mkdir_unlink_at() {
+    let dir = c"/test_mkdir_unlink_at";
+    mkdir(dir).unwrap();
+    let dirfd = raw_open(AT_FDCWD, dir, O_RDONLY | O_DIRECTORY);
+    assert!(dirfd >= 0);
+    let dirfd_arg = dirfd as u64;
+
+    let ret = syscall_insn3(SYS_MKDIR, dirfd_arg, c"sub".as_ptr() as u64, 0);
+    assert_eq!(ret, 0);
+    // The directory was created in the directory the descriptor refers to.
+    let fd = raw_open(
+        AT_FDCWD,
+        c"/test_mkdir_unlink_at/sub",
+        O_RDONLY | O_DIRECTORY,
+    );
+    assert!(fd >= 0);
+    raw_close(fd);
+
+    // Only AT_REMOVEDIR is a valid flag.
+    let ret = syscall_insn3(SYS_UNLINK, dirfd_arg, c"sub".as_ptr() as u64, 1);
+    assert_eq!(ret as i64, err(SysCallError::EINVAL));
+    let ret = syscall_insn3(SYS_UNLINK, dirfd_arg, c"sub".as_ptr() as u64, 0);
+    assert_eq!(ret as i64, err(SysCallError::EISDIR));
+    let remove = u64::from(AT_REMOVEDIR);
+    let ret = syscall_insn3(SYS_UNLINK, dirfd_arg, c"sub".as_ptr() as u64, remove);
+    assert_eq!(ret, 0);
+
+    // A descriptor that is not open.
+    let ret = syscall_insn3(SYS_MKDIR, 1000, c"sub".as_ptr() as u64, 0);
+    assert_eq!(ret as i64, err(SysCallError::EBADF));
+
+    raw_close(dirfd);
     rmdir(dir).unwrap();
 }

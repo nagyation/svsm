@@ -512,6 +512,29 @@ pub fn open_root(
     }
 }
 
+/// Looks up the file or directory a path refers to, starting at a given
+/// directory.
+///
+/// # Arguments
+///
+/// `root_dir`: Directory to start walking `path` from.
+/// `path`: Path of the entry. A path without any name, like `""` or `/`,
+/// refers to `root_dir` itself.
+///
+/// # Returns
+///
+/// [`Result<DirEntry, SvsmError>`]: [`Result`] containing the [`DirEntry`]
+/// the path refers to if it exists, [`SvsmError`] otherwise.
+pub fn lookup_root(root_dir: Arc<dyn Directory>, path: &str) -> Result<DirEntry, SvsmError> {
+    let mut path_items = split_path_allow_empty(path);
+    let Some(entry_name) = path_items.next_back() else {
+        return Ok(DirEntry::Directory(root_dir));
+    };
+    let dir = walk_path(root_dir, path_items)?;
+
+    dir.lookup_entry(entry_name)
+}
+
 /// Open a file to get the file handle for further file operations.
 ///
 /// # Argument
@@ -1075,6 +1098,36 @@ mod tests {
             };
             assert!(*elem == expected);
         }
+
+        // Cleanup
+        unlink("test1/file1").unwrap();
+        rmdir("test1").unwrap();
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "inline assembly")]
+    fn test_lookup_root() {
+        let _test_mem = TestRootMem::setup(DEFAULT_TEST_MEMORY_SIZE);
+        let _test_fs = TestFileSystemGuard::setup();
+
+        mkdir("test1").unwrap();
+        create("test1/file1").unwrap();
+        let root = opendir("/").unwrap();
+
+        // Paths without names refer to the starting directory.
+        assert!(lookup_root(root.clone(), "").unwrap().is_dir());
+        assert!(lookup_root(root.clone(), "/").unwrap().is_dir());
+
+        assert!(lookup_root(root.clone(), "test1").unwrap().is_dir());
+        assert!(lookup_root(root.clone(), "/test1/file1").unwrap().is_file());
+
+        // Lookup relative to a sub-directory.
+        let dir = opendir("test1").unwrap();
+        assert!(lookup_root(dir, "file1").unwrap().is_file());
+
+        // Entries that do not exist, and files used as directories.
+        lookup_root(root.clone(), "test2").unwrap_err();
+        lookup_root(root.clone(), "test1/file1/file2").unwrap_err();
 
         // Cleanup
         unlink("test1/file1").unwrap();

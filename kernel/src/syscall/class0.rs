@@ -15,8 +15,14 @@ use crate::task::terminate;
 use core::ffi::c_char;
 use syscall::SysCallError;
 
+/// Returns the exit status of a task that exits with `exit_code`. Like on
+/// Linux, only the low 8 bits of the exit code are kept.
+fn exit_status(exit_code: u32) -> u8 {
+    (exit_code & 0xff) as u8
+}
+
 pub fn sys_exit(exit_code: u32) -> ! {
-    let code = (exit_code & 0xffff) as u16;
+    let code = u16::from(exit_status(exit_code));
     log::info!(
         "Terminating task {}, exit_code {code}",
         current_task().get_task_name()
@@ -41,4 +47,19 @@ pub fn sys_close(obj_id: u32) -> Result<u64, SysCallError> {
     // if called with an invalid handle
     let _ = obj_close(obj_id.into());
     Ok(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_exit_status() {
+        assert_eq!(exit_status(0), 0);
+        assert_eq!(exit_status(255), 255);
+        // Only the low 8 bits are kept.
+        assert_eq!(exit_status(256), 0);
+        assert_eq!(exit_status(0x1_0003), 3);
+        assert_eq!(exit_status(!0), 255);
+    }
 }

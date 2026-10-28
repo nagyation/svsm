@@ -90,13 +90,24 @@ pub fn sys_seek(obj_id: u32, offset: usize, raw_mode: usize) -> Result<u64, SysC
 }
 
 pub fn sys_truncate(obj_id: u32, length: usize) -> Result<u64, SysCallError> {
+    // The length is signed, as on Linux, and cannot be negative. Linux checks
+    // it before the descriptor.
+    if i64::try_from(length).is_err() {
+        return Err(EINVAL);
+    }
+
     let fs_obj = obj_get(obj_id.into())?;
     let fs_obj = fs_obj.as_fs().ok_or(EOPNOTSUPP)?;
 
-    fs_obj
-        .truncate(length)
-        .map(|l| l as u64)
-        .map_err(SysCallError::from)
+    // Linux reports a descriptor that is not open for writing, or is not a
+    // regular file, as EINVAL.
+    fs_obj.truncate(length).map_err(|e| match e {
+        SvsmError::NotSupported
+        | SvsmError::FileSystem(FsError::ReadOnly | FsError::NotSupported) => EINVAL,
+        e => SysCallError::from(e),
+    })?;
+
+    Ok(0)
 }
 
 pub fn sys_unlink(path: usize) -> Result<u64, SysCallError> {

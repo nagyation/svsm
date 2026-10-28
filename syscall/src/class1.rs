@@ -101,6 +101,8 @@ pub fn seek(fd: &FsObjHandle, offset: i64, mode: SeekMode) -> Result<u64, SysCal
     unsafe { syscall3(SYS_SEEK, fd.id().into(), offset as u64, mode as u64) }
 }
 
+/// Changes the size of the file like ftruncate(). A larger size extends the
+/// file with zeros. The file offset does not change.
 pub fn truncate(fd: &FsObjHandle, length: u64) -> Result<u64, SysCallError> {
     // SAFETY: Invokes a system call and does not directly change any memory of
     // the process.

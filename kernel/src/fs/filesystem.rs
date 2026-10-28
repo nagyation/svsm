@@ -168,7 +168,8 @@ impl FileHandle {
         result
     }
 
-    /// Used to truncate the file to the specified size.
+    /// Used to truncate the file to the specified size. Like with the Linux
+    /// ftruncate(), the current file offset does not change.
     ///
     ///  # Arguments
     ///
@@ -182,12 +183,7 @@ impl FileHandle {
     /// a problem during the truncate operation.
     pub fn truncate(&self, offset: usize) -> Result<usize, SvsmError> {
         self.check_write()?;
-        let mut current = self.current.lock();
-        let result = self.file.truncate(offset);
-        if let Ok(new_size) = result {
-            *current = current.min(new_size);
-        }
-        result
+        self.file.truncate(offset)
     }
 
     fn seek_abs_locked(&self, current: &mut usize, pos: usize) {

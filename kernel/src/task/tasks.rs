@@ -30,7 +30,7 @@ use crate::cpu::percpu::{PerCpu, current_task};
 use crate::cpu::shadow_stack::init_shadow_stack;
 use crate::cpu::sse::sse_restore_context;
 use crate::cpu::sse::xsave_area_size;
-use crate::cpu::{X86ExceptionContext, X86InterruptFrame};
+use crate::cpu::{X86ExceptionContext, X86GeneralRegs, X86InterruptFrame};
 use crate::error::SvsmError;
 use crate::fs::{Directory, FileHandle, opendir, stdin_open, stdout_open};
 use crate::locking::RWLock;
@@ -1142,6 +1142,19 @@ unsafe fn run_user_task(info_ptr: *mut UserExecInfo, _unused: u64, ctxt: &mut X8
         }
     };
 
+    init_user_context(ctxt, entry);
+}
+
+/// Prepares an exception context for entering a newly loaded user-mode
+/// program, with cleared general purpose registers and the stack pointer at
+/// the top of the task stack.
+///
+/// # Arguments
+///
+/// * `ctxt` - The context used for the return to user mode.
+/// * `entry` - The entry point of the program.
+pub(super) fn init_user_context(ctxt: &mut X86ExceptionContext, entry: u64) {
+    ctxt.regs = X86GeneralRegs::default();
     ctxt.frame = X86InterruptFrame {
         rip: entry as usize,
         cs: (SVSM_USER_CS | SVSM_USER_CPL).into(),

@@ -10,7 +10,7 @@ use super::TaskPointer;
 use crate::address::{Address, VirtAddr};
 use crate::cpu::percpu::current_task;
 use crate::error::SvsmError;
-use crate::fs::{Directory, open_read};
+use crate::fs::{Directory, FileHandle, open_read};
 use crate::mm::vm::VMFileMappingFlags;
 use crate::mm::zero_user_mem;
 use crate::mm::{USER_MEM_END, mmap_user};
@@ -70,13 +70,27 @@ fn task_name(binary: &str) -> &str {
 /// [`Ok(TaskPointer)`] on success, [`Err(SvsmError)`] on failure.
 pub fn exec(info: UserExecInfo) -> Result<u64, SvsmError> {
     let fh = open_read(&info.binary)?;
+    load_elf(&fh)
+}
+
+/// Loads a user-mode ELF binary into the current tasks address space and sets
+/// up the task stack.
+///
+/// # Arguments
+///
+/// * fh: Handle of the ELF file.
+///
+/// # Returns
+///
+/// The entry point of the binary on success, [`Err(SvsmError)`] on failure.
+fn load_elf(fh: &FileHandle) -> Result<u64, SvsmError> {
     let file_size = fh.size();
 
     let current_task = current_task();
 
     let vstart = current_task.mmap_kernel_guard(
         VirtAddr::new(0),
-        Some(&fh),
+        Some(fh),
         0,
         file_size,
         VMFileMappingFlags::Read,
@@ -120,7 +134,7 @@ pub fn exec(info: UserExecInfo) -> Result<u64, SvsmError> {
 
         let map_offset = file_offset - page_offset;
         let file_map_size = file_size + page_offset;
-        mmap_user(map_start, Some(&fh), map_offset, file_map_size, flags)?;
+        mmap_user(map_start, Some(fh), map_offset, file_map_size, flags)?;
 
         let file_map_size_aligned = align_up(file_map_size, PAGE_SIZE);
         let zero_end = file_map_size_aligned.min(mem_map_size);

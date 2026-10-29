@@ -5,14 +5,13 @@
 // Author: Vasant Karasulli <vkarasulli@suse.de>
 
 use crate::console::_print;
+use crate::cpu::percpu::current_task;
 use crate::error::SvsmError;
 use crate::fs::SliceRefBuffer;
 use crate::locking::SpinLock;
-use crate::syscall::{ObjHandle, obj_get};
 use crate::utils::immut_after_init::ImmutAfterInitCell;
 use core::fmt;
 use release::COCONUT_VERSION;
-use syscall::STDOUT_FILENO;
 
 fn print_warning(_e: SvsmError) {
     _print(format_args!("ERROR: logging failed\n"));
@@ -29,10 +28,11 @@ impl LogBuffer {
 impl fmt::Write for LogBuffer {
     /// Writes all bytes from the slice to the log buffer
     fn write_str(&mut self, s: &str) -> fmt::Result {
-        let obj_handle = ObjHandle::new(STDOUT_FILENO);
         let buf = SliceRefBuffer::new(s.as_bytes());
-        let fs = obj_get(obj_handle).map_err(print_warning).unwrap();
-        let fs = fs
+        // The log of the task does not depend on its file descriptors, which
+        // user mode can close.
+        let log = current_task().log();
+        let fs = log
             .as_fs()
             .ok_or(SvsmError::LogError)
             .map_err(print_warning)
@@ -108,4 +108,24 @@ pub fn install_buffer_logger() {
     // Log levels are to be configured via the log's library feature configuration.
     log::set_max_level(log::LevelFilter::Trace);
     log::info!("COCONUT Secure Virtual Machine Service Module Version {COCONUT_VERSION}");
+}
+
+#[cfg(all(test, test_in_svsm))]
+mod tests {
+    use crate::cpu::percpu::current_task;
+    use crate::syscall::ObjHandle;
+    use syscall::STDOUT_FILENO;
+
+    #[test]
+    #[cfg_attr(not(test_in_svsm), ignore = "Can only be run inside guest")]
+    fn test_log_without_stdout() {
+        let task = current_task();
+        let stdout = ObjHandle::new(STDOUT_FILENO);
+        let log = task.remove_obj(stdout).unwrap();
+
+        // The kernel log of the task does not use its standard output.
+        log::info!("logging with the standard output closed");
+
+        task.add_obj_at(log, stdout).unwrap();
+    }
 }

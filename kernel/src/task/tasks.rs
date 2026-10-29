@@ -950,6 +950,34 @@ impl Task {
         vmr.remove(addr).map(|_| ())
     }
 
+    /// Removes all mappings from the user address space of this task.
+    ///
+    /// # Returns
+    ///
+    /// `Ok(())` on success, `Err(SvsmError)` on failure.
+    pub fn munmap_user_all(&self) -> Result<(), SvsmError> {
+        let vmr = self.mm.user_range().ok_or(SvsmError::Mem)?;
+        vmr.remove_all()
+    }
+
+    /// Resets the FPU/SSE state of the running task to the initial state, as
+    /// a new task starts with. Must be called on the current task.
+    pub fn reset_fpu_state(&self) {
+        // Interrupts stay off so that a task switch cannot save the live
+        // registers into the area between clearing and restoring it.
+        let _irq = IrqGuard::new();
+        let addr = u64::from(self.xsa.vaddr());
+        // SAFETY: the XSAVE area is owned by this task and is only accessed
+        // by the context switch code of the current CPU, which cannot run
+        // with interrupts disabled. The area is sized for the enabled
+        // features and writing zeroes is valid: a zero XSTATE_BV header
+        // makes XRSTOR load the initial state of all components.
+        unsafe {
+            core::ptr::write_bytes(addr as *mut u8, 0, self.xsa.len());
+            sse_restore_context(addr);
+        }
+    }
+
     /// Adds an object to the current task.
     ///
     /// # Arguments

@@ -7,14 +7,16 @@
 extern crate alloc;
 
 use super::TaskPointer;
+use super::tasks::init_user_context;
 use crate::address::{Address, VirtAddr};
+use crate::cpu::X86ExceptionContext;
 use crate::cpu::percpu::current_task;
 use crate::error::SvsmError;
-use crate::fs::{Directory, FileHandle, open_read};
+use crate::fs::{Directory, FileHandle, open_read, open_root};
 use crate::mm::vm::VMFileMappingFlags;
 use crate::mm::zero_user_mem;
 use crate::mm::{USER_MEM_END, mmap_user};
-use crate::task::{create_user_task, finish_user_task, schedule};
+use crate::task::{TaskExitStatus, create_user_task, finish_user_task, schedule, terminate};
 use crate::types::PAGE_SIZE;
 use crate::utils::align_up;
 use alloc::boxed::Box;
@@ -70,7 +72,7 @@ fn task_name(binary: &str) -> &str {
 /// [`Ok(TaskPointer)`] on success, [`Err(SvsmError)`] on failure.
 pub fn exec(info: UserExecInfo) -> Result<u64, SvsmError> {
     let fh = open_read(&info.binary)?;
-    load_elf(&fh)
+    load_elf(&fh, || Ok(()))
 }
 
 /// Loads a user-mode ELF binary into the current tasks address space and sets
@@ -79,12 +81,21 @@ pub fn exec(info: UserExecInfo) -> Result<u64, SvsmError> {
 /// # Arguments
 ///
 /// * fh: Handle of the ELF file.
+/// * before_load: Called once the file has been parsed successfully, before
+///   the first user mapping is created. Failing here leaves the file unloaded.
 ///
 /// # Returns
 ///
 /// The entry point of the binary on success, [`Err(SvsmError)`] on failure.
-fn load_elf(fh: &FileHandle) -> Result<u64, SvsmError> {
+fn load_elf(
+    fh: &FileHandle,
+    before_load: impl FnOnce() -> Result<(), SvsmError>,
+) -> Result<u64, SvsmError> {
     let file_size = fh.size();
+    // An empty file cannot be mapped.
+    if file_size == 0 {
+        return Err(SvsmError::Elf(elf::ElfError::FileTooShort));
+    }
 
     let current_task = current_task();
 
@@ -99,7 +110,9 @@ fn load_elf(fh: &FileHandle) -> Result<u64, SvsmError> {
     // SAFETY: `vstart` has just been mapped using `file_size` as the size,
     // so it is safe to create a slice of the same size.
     let buf = unsafe { vstart.to_slice::<u8>(file_size) };
-    let elf_bin = Elf64File::read(buf).map_err(|_| SvsmError::Mem)?;
+    let elf_bin = Elf64File::read(buf).map_err(SvsmError::Elf)?;
+
+    before_load()?;
 
     let alloc_info = elf_bin.image_load_vaddr_alloc_info();
     let virt_base = alloc_info.range.vaddr_begin;
@@ -168,6 +181,47 @@ fn load_elf(fh: &FileHandle) -> Result<u64, SvsmError> {
     mmap_user(stack_addr, None, 0, user_stack_size, stack_flags)?;
 
     Ok(entry)
+}
+
+/// Replaces the program of the current task with a user-mode ELF binary.
+/// The task keeps its other resources, like its objects.
+///
+/// The binary is parsed before the address space of the task is cleared.
+/// Errors after that point cannot be reported to the old program anymore,
+/// so the task is terminated.
+///
+/// # Arguments
+///
+/// * ctxt: The exception context of the current task, which is prepared for
+///   entering the new program on success.
+/// * path: Path of the binary, relative to the root directory of the task.
+///
+/// # Returns
+///
+/// `Ok(())` on success, [`Err(SvsmError)`] if the binary cannot be executed.
+/// The old program continues in that case.
+pub fn exec_current(ctxt: &mut X86ExceptionContext, path: &str) -> Result<(), SvsmError> {
+    let task = current_task();
+    let fh = open_root(task.rootdir(), path, true, false)?;
+
+    let mut cleared = false;
+    let result = load_elf(&fh, || {
+        // The old program cannot be resumed after this point.
+        cleared = true;
+        task.munmap_user_all()
+    });
+    match result {
+        Ok(entry) => {
+            task.reset_fpu_state();
+            init_user_context(ctxt, entry);
+            Ok(())
+        }
+        Err(err) if !cleared => Err(err),
+        Err(err) => {
+            log::error!("Failed to load ELF binary {path}: {err:?}");
+            terminate(Some(TaskExitStatus::Exception));
+        }
+    }
 }
 
 /// Starts a new task and sets it up for loading and executing a user-mode

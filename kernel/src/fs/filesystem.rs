@@ -627,13 +627,33 @@ pub fn opendir(path: &str) -> Result<Arc<dyn Directory>, SvsmError> {
 /// [`Result<FileHandle, SvsmError>`]: [`Result`] containing the [`FileHandle`]
 /// for the opened file if successful, [`SvsmError`] otherwise.
 pub fn create_root(root_dir: Arc<dyn Directory>, path: &str) -> Result<FileHandle, SvsmError> {
-    let mut path_items = split_path(path)?;
-    let file_name = FileName::from(path_items.next_back().unwrap());
-    let current_dir = walk_path(root_dir, path_items)?;
-    let file = current_dir.create_file(file_name)?;
+    let file = create_file_root(root_dir, path)?;
 
     // File open for reading and writing
     Ok(FileHandle::new(&file, true, true))
+}
+
+/// Create a file with the given path from a given root directory, and return
+/// the file, so that it can be opened with any access.
+///
+/// # Argument
+///
+/// `root_dir`: Pointer to root directory object.
+/// `path`: path of the file to be created.
+///
+/// # Returns
+///
+/// [`Result<Arc<dyn File>, SvsmError>`]: [`Result`] containing the new file
+/// if successful, [`SvsmError`] otherwise.
+pub fn create_file_root(
+    root_dir: Arc<dyn Directory>,
+    path: &str,
+) -> Result<Arc<dyn File>, SvsmError> {
+    let mut path_items = split_path(path)?;
+    let file_name = FileName::from(path_items.next_back().unwrap());
+    let current_dir = walk_path(root_dir, path_items)?;
+
+    current_dir.create_file(file_name)
 }
 
 /// Create a file with the given path from the file-system root.
@@ -1132,6 +1152,28 @@ mod tests {
         // Cleanup
         unlink("test1/file1").unwrap();
         rmdir("test1").unwrap();
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "inline assembly")]
+    fn test_create_file_root() {
+        let _test_mem = TestRootMem::setup(DEFAULT_TEST_MEMORY_SIZE);
+        let _test_fs = TestFileSystemGuard::setup();
+
+        let root = opendir("/").unwrap();
+
+        // The file that is returned can be opened with any access.
+        let file = create_file_root(root.clone(), "new_file").unwrap();
+        let handle = FileHandle::new(&file, false, true);
+        assert_eq!(handle.write(b"abc").unwrap(), 3);
+        assert_eq!(open_read("new_file").unwrap().size(), 3);
+
+        // Creating it again fails.
+        let err = create_file_root(root.clone(), "new_file").err().unwrap();
+        assert!(matches!(err, SvsmError::FileSystem(FsError::FileExists)));
+
+        // Cleanup
+        unlink("new_file").unwrap();
     }
 
     #[test]

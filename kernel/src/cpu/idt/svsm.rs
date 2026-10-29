@@ -469,7 +469,10 @@ fn handle_system_call(ctxt: &mut X86ExceptionContext) {
     ctxt.regs.rax = match input {
         // Class 0 SysCalls.
         SYS_EXIT => sys_exit(ctxt.regs.rdi as u32),
-        SYS_EXEC => sys_exec(ctxt.regs.rdi, ctxt.regs.rsi, ctxt.regs.r8),
+        SYS_EXEC => {
+            let (file, argv, envp) = (ctxt.regs.rdi, ctxt.regs.rsi, ctxt.regs.r8);
+            sys_exec(ctxt, file, argv, envp)
+        }
         SYS_CLOSE => sys_close(ctxt.regs.rdi as u32),
         // Class 1 SysCalls.
         SYS_OPEN => sys_open(ctxt.regs.rdi, ctxt.regs.rsi, ctxt.regs.r8, ctxt.regs.r9),

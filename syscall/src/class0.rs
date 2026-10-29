@@ -6,6 +6,7 @@
 
 use super::call::{SysCallError, syscall1, syscall3};
 use super::{SYS_EXEC, SYS_EXIT};
+use core::convert::Infallible;
 use core::ffi::CStr;
 
 /// Terminate the current task with the given exit code. Like on Linux, only
@@ -18,24 +19,16 @@ pub fn exit(code: u32) -> ! {
     unreachable!("Should never return from SYS_EXIT syscall");
 }
 
-#[allow(dead_code)]
-#[derive(Debug)]
-pub struct Tid(u32);
-
-pub fn exec(file: &CStr, root: &CStr, flags: u32) -> Result<Tid, SysCallError> {
-    // SAFETY:
-    // 1. SYS_EXEC is a supported syscall number by the svsm kernel.
-    // 2. Parameters `file.as_ptr()` and `root.as_ptr()` are passed as raw pointers.
-    // but the function `sys_exec` which this function delegates to, performs the
-    // necessary checks.
-    // 3. Currently `flags` parameter is unused.
-    unsafe {
-        syscall3(
-            SYS_EXEC,
-            file.as_ptr() as u64,
-            root.as_ptr() as u64,
-            u64::from(flags),
-        )
-        .map(|ret| Tid(ret as u32))
+/// Replaces the program of the calling task, like the Linux `execve()` system
+/// call. The task keeps its open file descriptors. It does not return if the
+/// program is executed, and returns the error otherwise. The arguments and the
+/// environment of the new program are not supported yet.
+pub fn exec(file: &CStr) -> Result<Infallible, SysCallError> {
+    // SAFETY: Invokes a system call that only reads the path, which is a
+    // NUL-terminated string. If it succeeds, the program is replaced and the
+    // call does not return.
+    match unsafe { syscall3(SYS_EXEC, file.as_ptr() as u64, 0, 0) } {
+        Err(err) => Err(err),
+        Ok(_) => unreachable!("execve() does not return if it succeeds"),
     }
 }

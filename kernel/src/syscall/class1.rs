@@ -24,7 +24,7 @@ use syscall::*;
 use zerocopy::IntoBytes;
 
 /// Reads a path passed by user mode.
-fn user_path(path: usize) -> Result<String, SysCallError> {
+pub(super) fn user_path(path: usize) -> Result<String, SysCallError> {
     let path = UserPtr::<c_char>::new(VirtAddr::from(path))?
         .read_c_string()
         .map_err(|err| match err {

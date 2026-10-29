@@ -45,6 +45,9 @@
                     "RUSTDOC": "true",
                     "LINK_TEST": "1"
                 }
+            },
+            "execve_tester": {
+                "path": "/test/execve_tester"
             }
         }
     }

@@ -222,6 +222,9 @@ impl From<SvsmError> for SysCallError {
 
             SvsmError::InvalidAddress | SvsmError::Fault => SysCallError::EFAULT,
 
+            // The file is not an executable ELF binary.
+            SvsmError::Elf(_) => SysCallError::ENOEXEC,
+
             SvsmError::InvalidBytes | SvsmError::InvalidUtf8 | SvsmError::InvalidParameter => {
                 SysCallError::EINVAL
             }

@@ -4,15 +4,15 @@
 //
 // Author: Joerg Roedel <jroedel@suse.de>
 
+use super::class1::user_path;
 use super::obj::obj_close;
-use crate::address::VirtAddr;
+use crate::cpu::X86ExceptionContext;
 use crate::cpu::percpu::current_task;
-use crate::fs::find_dir;
-use crate::mm::guestmem::UserPtr;
+use crate::error::SvsmError;
+use crate::fs::FsError;
 use crate::task::TaskExitStatus;
-use crate::task::exec_user;
+use crate::task::exec_current;
 use crate::task::terminate;
-use core::ffi::c_char;
 use syscall::SysCallError;
 
 /// Returns the exit status of a task that exits with `exit_code`. Like on
@@ -30,16 +30,28 @@ pub fn sys_exit(exit_code: u32) -> ! {
     terminate(Some(TaskExitStatus::Exited(code)));
 }
 
-pub fn sys_exec(file: usize, root: usize, _flags: usize) -> Result<u64, SysCallError> {
-    let user_file_ptr = UserPtr::<c_char>::new(VirtAddr::from(file))?;
-    let user_root_ptr = UserPtr::<c_char>::new(VirtAddr::from(root))?;
+pub fn sys_exec(
+    ctxt: &mut X86ExceptionContext,
+    file: usize,
+    argv: usize,
+    envp: usize,
+) -> Result<u64, SysCallError> {
+    let path = user_path(file)?;
 
-    let file_str = user_file_ptr.read_c_string()?;
-    let root_str = user_root_ptr.read_c_string()?;
-    let real_root = find_dir(current_task().rootdir(), &root_str)?;
-    let tid = exec_user(file_str, real_root)?;
+    // The arguments and the environment are not passed to the program yet.
+    if argv != 0 || envp != 0 {
+        return Err(SysCallError::EINVAL);
+    }
 
-    Ok(tid.get_task_id().into())
+    // On success the context enters the new program, whose registers are
+    // cleared, so the result is 0.
+    exec_current(ctxt, &path).map_err(|err| match err {
+        // Linux refuses to execute anything but a regular file with EACCES.
+        SvsmError::FileSystem(FsError::IsDir) => SysCallError::EACCES,
+        err => err.into(),
+    })?;
+
+    Ok(0)
 }
 
 pub fn sys_close(obj_id: u32) -> Result<u64, SysCallError> {

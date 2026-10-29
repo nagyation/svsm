@@ -18,6 +18,10 @@ use alloc::vec::Vec;
 
 use core::cmp::{max, min};
 
+/// The largest size of a file. The files live in memory, so this keeps one
+/// of them from using all of it.
+pub const MAX_FILE_SIZE: usize = 64 * 1024 * 1024;
+
 /// Represents an SVSM Ramfile
 #[derive(Debug, Default)]
 struct RawRamFile {
@@ -71,6 +75,16 @@ impl RawRamFile {
         }
 
         Ok(())
+    }
+
+    /// Sets the capacity of the file like [`Self::set_capacity()`], and frees
+    /// the pages it allocated again if that fails.
+    fn grow_capacity(&mut self, capacity: usize) -> Result<(), SvsmError> {
+        let pages = self.pages.len();
+        self.set_capacity(capacity).inspect_err(|_| {
+            self.pages.truncate(pages);
+            self.capacity = pages * PAGE_SIZE;
+        })
     }
 
     /// Read data from a file page and store it in a Buffer object.
@@ -192,14 +206,22 @@ impl RawRamFile {
         buffer: &dyn Buffer,
         file_offset: usize,
     ) -> Result<usize, SvsmError> {
-        let mut current = file_offset;
-        let mut len = buffer.size();
-        let mut buffer_offset: usize = 0;
-        let capacity = file_offset
-            .checked_add(len)
-            .ok_or(SvsmError::FileSystem(FsError::inval()))?;
+        // An empty write does not need any memory, wherever it is.
+        if buffer.size() == 0 {
+            return Ok(0);
+        }
 
-        self.set_capacity(capacity)?;
+        // Like on Linux, a write that starts at the largest size fails, and
+        // one that crosses it is shortened.
+        if file_offset >= MAX_FILE_SIZE {
+            return Err(SvsmError::FileSystem(FsError::file_too_big()));
+        }
+
+        let mut current = file_offset;
+        let mut len = buffer.size().min(MAX_FILE_SIZE - file_offset);
+        let mut buffer_offset: usize = 0;
+
+        self.grow_capacity(file_offset + len)?;
 
         while len > 0 {
             let written = self.write_buffer_to_page(buffer, buffer_offset, current)?;
@@ -225,20 +247,14 @@ impl RawRamFile {
     /// number of bytes file truncated to if successful, SvsmError
     /// otherwise.
     fn truncate(&mut self, size: usize) -> Result<usize, SvsmError> {
-        if size > isize::MAX as usize {
-            return Err(SvsmError::FileSystem(FsError::inval()));
+        if size > MAX_FILE_SIZE {
+            return Err(SvsmError::FileSystem(FsError::file_too_big()));
         }
 
         if size > self.size {
             // The pages of a file are zeroed, and so is the part of the last
             // page after the end of the file.
-            let pages = self.pages.len();
-            if let Err(e) = self.set_capacity(size) {
-                // Do not keep the pages allocated for the larger size.
-                self.pages.truncate(pages);
-                self.capacity = pages * PAGE_SIZE;
-                return Err(e);
-            }
+            self.grow_capacity(size)?;
             self.size = size;
             return Ok(size);
         }
@@ -587,6 +603,48 @@ mod tests {
         // A size that is too large is refused and the file is unchanged.
         file.truncate(usize::MAX).unwrap_err();
         assert_eq!(file.size(), 200);
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "inline assembly")]
+    fn test_ramfs_file_size_limit() {
+        let _test_mem = TestRootMem::setup(DEFAULT_TEST_MEMORY_SIZE);
+
+        let file = RamFile::new();
+
+        // A write at the largest size fails without allocating anything,
+        // and an empty one does nothing wherever it is.
+        let err = file.write(b"x", MAX_FILE_SIZE).unwrap_err();
+        assert!(matches!(err, SvsmError::FileSystem(FsError::FileTooBig)));
+        assert_eq!(file.write(b"", MAX_FILE_SIZE).unwrap(), 0);
+        assert_eq!(file.size(), 0);
+
+        // So does extending the file past the largest size.
+        let err = file.truncate(MAX_FILE_SIZE + 1).unwrap_err();
+        assert!(matches!(err, SvsmError::FileSystem(FsError::FileTooBig)));
+        assert_eq!(file.size(), 0);
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "inline assembly")]
+    fn test_ramfs_file_out_of_memory() {
+        let _test_mem = TestRootMem::setup(DEFAULT_TEST_MEMORY_SIZE);
+
+        let file = RamFile::new();
+
+        // A write that needs more memory than there is, and an extension of
+        // the file too, fail and leave the file as it was.
+        file.write(b"a", 2 * DEFAULT_TEST_MEMORY_SIZE).unwrap_err();
+        file.truncate(2 * DEFAULT_TEST_MEMORY_SIZE).unwrap_err();
+        assert_eq!(file.size(), 0);
+
+        // The pages the failed calls allocated were freed: a write that needs
+        // the first pages again works, and reads back.
+        file.write(b"b", 3 * PAGE_SIZE).unwrap();
+        assert_eq!(file.size(), 3 * PAGE_SIZE + 1);
+        let mut buf = [0xffu8; 1];
+        assert_eq!(file.read(&mut buf, 3 * PAGE_SIZE).unwrap(), 1);
+        assert_eq!(&buf, b"b");
     }
 
     #[test]

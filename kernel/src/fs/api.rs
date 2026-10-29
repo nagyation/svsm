@@ -28,6 +28,7 @@ pub enum FsError {
     FileExists,
     FileNotFound,
     NotSupported,
+    FileTooBig,
     BadHandle,
     ReadOnly,
     WriteOnly,
@@ -70,6 +71,7 @@ impl FsError {
     impl_fs_err!(file_exists, FileExists);
     impl_fs_err!(file_not_found, FileNotFound);
     impl_fs_err!(not_supported, NotSupported);
+    impl_fs_err!(file_too_big, FileTooBig);
     impl_fs_err!(bad_handle, BadHandle);
     impl_fs_err!(read_only, ReadOnly);
     impl_fs_err!(write_only, WriteOnly);

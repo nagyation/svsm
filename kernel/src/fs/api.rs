@@ -19,6 +19,9 @@ use packit::PackItError;
 pub type FileName = String;
 pub type FileNameRef<'a> = &'a str;
 
+/// The longest name of a file or directory, in bytes
+pub const NAME_MAX: usize = syscall::F_NAME_SIZE - 1;
+
 /// Represents the type of error occurred
 /// while doing SVSM filesystem operations.
 #[derive(Copy, Clone, Debug, Default)]
@@ -28,6 +31,7 @@ pub enum FsError {
     FileExists,
     FileNotFound,
     NotSupported,
+    NameTooLong,
     FileTooBig,
     BadHandle,
     ReadOnly,
@@ -71,6 +75,7 @@ impl FsError {
     impl_fs_err!(file_exists, FileExists);
     impl_fs_err!(file_not_found, FileNotFound);
     impl_fs_err!(not_supported, NotSupported);
+    impl_fs_err!(name_too_long, NameTooLong);
     impl_fs_err!(file_too_big, FileTooBig);
     impl_fs_err!(bad_handle, BadHandle);
     impl_fs_err!(read_only, ReadOnly);

@@ -203,6 +203,7 @@ impl From<SvsmError> for SysCallError {
                 FsError::FileExists => SysCallError::EEXIST,
                 FsError::FileNotFound => SysCallError::ENOENT,
                 FsError::NotSupported => SysCallError::EOPNOTSUPP,
+                FsError::NameTooLong => SysCallError::ENAMETOOLONG,
                 FsError::FileTooBig => SysCallError::EFBIG,
                 // Linux reports access through a file descriptor that was
                 // not opened for it as a bad file descriptor.

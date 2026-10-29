@@ -465,6 +465,14 @@ impl RamDirectory {
     }
 }
 
+/// Checks that a name is not longer than [`NAME_MAX`].
+fn check_name(name: FileNameRef<'_>) -> Result<(), SvsmError> {
+    if name.len() > NAME_MAX {
+        return Err(SvsmError::FileSystem(FsError::name_too_long()));
+    }
+    Ok(())
+}
+
 impl Directory for RamDirectory {
     fn list(&self) -> Vec<FileName> {
         self.directory.lock_read().list()
@@ -475,14 +483,17 @@ impl Directory for RamDirectory {
     }
 
     fn lookup_entry(&self, name: FileNameRef<'_>) -> Result<DirEntry, SvsmError> {
+        check_name(name)?;
         self.directory.lock_read().lookup_entry(name)
     }
 
     fn create_file(&self, name: FileName) -> Result<Arc<dyn File>, SvsmError> {
+        check_name(&name)?;
         self.directory.lock_write().create_file(name)
     }
 
     fn create_directory(&self, name: FileName) -> Result<Arc<dyn Directory>, SvsmError> {
+        check_name(&name)?;
         self.directory.lock_write().create_directory(name)
     }
 
@@ -645,6 +656,29 @@ mod tests {
         let mut buf = [0xffu8; 1];
         assert_eq!(file.read(&mut buf, 3 * PAGE_SIZE).unwrap(), 1);
         assert_eq!(&buf, b"b");
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "inline assembly")]
+    fn test_ram_directory_name_length() {
+        let _test_mem = TestRootMem::setup(DEFAULT_TEST_MEMORY_SIZE);
+
+        let ram_dir = RamDirectory::new();
+        let longest = "a".repeat(NAME_MAX);
+        let too_long = "a".repeat(NAME_MAX + 1);
+
+        // A name of the largest length works.
+        ram_dir.create_file(longest.clone()).unwrap();
+        assert!(ram_dir.lookup_entry(&longest).unwrap().is_file());
+        ram_dir.create_directory("b".repeat(NAME_MAX)).unwrap();
+
+        // A longer name can neither be created nor looked up.
+        let err = ram_dir.create_file(too_long.clone()).unwrap_err();
+        assert!(matches!(err, SvsmError::FileSystem(FsError::NameTooLong)));
+        let err = ram_dir.create_directory(too_long.clone()).unwrap_err();
+        assert!(matches!(err, SvsmError::FileSystem(FsError::NameTooLong)));
+        let err = ram_dir.lookup_entry(&too_long).err().unwrap();
+        assert!(matches!(err, SvsmError::FileSystem(FsError::NameTooLong)));
     }
 
     #[test]

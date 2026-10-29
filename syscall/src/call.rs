@@ -111,6 +111,7 @@ syscall_errors! {
     EISDIR = -21,
     EINVAL = -22,
     EFBIG = -27,
+    ENAMETOOLONG = -36,
     ENOSYS = -38,
     ENOTEMPTY = -39,
     EOPNOTSUPP = -95,

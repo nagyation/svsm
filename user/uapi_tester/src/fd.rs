@@ -7,9 +7,7 @@
 //! Tests for the file descriptors of a task.
 
 use super::syscall::{syscall_insn, syscall_insn3};
-use userlib::{
-    FileFlags, FileModes, Obj, SYS_CLOSE, SYS_READ, SYS_WRITE, SysCallError, open, unlink,
-};
+use userlib::{FileFlags, FileModes, Obj, SysCallError, SysNo, open, unlink};
 
 /// Checks that standard output and standard error, the file descriptors 1 and
 /// 2, are the log and accept writes, and that standard input, the file
@@ -20,15 +18,30 @@ fn test_log_descriptors() {
     let msg = b"test_log_descriptors\n";
 
     for fd in [1, 2] {
-        let ret = syscall_insn3(SYS_WRITE, fd, msg.as_ptr() as u64, msg.len() as u64);
+        let ret = syscall_insn3(
+            SysNo::Write as u64,
+            fd,
+            msg.as_ptr() as u64,
+            msg.len() as u64,
+        );
         assert_eq!(ret, msg.len() as u64);
     }
 
-    let ret = syscall_insn3(SYS_WRITE, 0, msg.as_ptr() as u64, msg.len() as u64);
+    let ret = syscall_insn3(
+        SysNo::Write as u64,
+        0,
+        msg.as_ptr() as u64,
+        msg.len() as u64,
+    );
     assert_eq!(ret as i64, SysCallError::EBADF as i64);
 
     let mut buf = [0u8; 8];
-    let ret = syscall_insn3(SYS_READ, 0, buf.as_mut_ptr() as u64, buf.len() as u64);
+    let ret = syscall_insn3(
+        SysNo::Read as u64,
+        0,
+        buf.as_mut_ptr() as u64,
+        buf.len() as u64,
+    );
     assert_eq!(ret, 0);
 }
 
@@ -37,7 +50,7 @@ fn test_log_descriptors() {
 #[test]
 #[cfg_attr(not(test_in_svsm), ignore = "Can only be run inside guest")]
 fn test_close_bad_descriptor() {
-    let bad = syscall_insn(SYS_CLOSE, 1000);
+    let bad = syscall_insn(SysNo::Close as u64, 1000);
     assert_eq!(bad as i64, SysCallError::EBADF as i64);
 
     let path = c"/test_close_bad_descriptor";
@@ -45,7 +58,7 @@ fn test_close_bad_descriptor() {
     let fd = u64::from(file.id());
     // Dropping the handle closes the file descriptor.
     drop(file);
-    let again = syscall_insn(SYS_CLOSE, fd);
+    let again = syscall_insn(SysNo::Close as u64, fd);
     assert_eq!(again as i64, SysCallError::EBADF as i64);
 
     unlink(path).unwrap();

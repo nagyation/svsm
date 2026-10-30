@@ -63,34 +63,52 @@ fn syscall(nr: u64, arg1: u64, arg2: u64, arg3: u64, arg4: u64) -> Result<u64, S
 
 fn open_path(path: &CStr, flags: u32) -> Result<u64, SysCallError> {
     let dirfd = AT_FDCWD as i64 as u64;
-    syscall(SYS_OPEN, dirfd, path.as_ptr() as u64, flags.into(), 0o644)
+    syscall(
+        SysNo::Openat as u64,
+        dirfd,
+        path.as_ptr() as u64,
+        flags.into(),
+        0o644,
+    )
 }
 
 fn write_fd(fd: u64, data: &[u8]) -> Result<u64, SysCallError> {
-    syscall(SYS_WRITE, fd, data.as_ptr() as u64, data.len() as u64, 0)
+    syscall(
+        SysNo::Write as u64,
+        fd,
+        data.as_ptr() as u64,
+        data.len() as u64,
+        0,
+    )
 }
 
 fn read_fd(fd: u64, buf: &mut [u8]) -> Result<u64, SysCallError> {
-    syscall(SYS_READ, fd, buf.as_mut_ptr() as u64, buf.len() as u64, 0)
+    syscall(
+        SysNo::Read as u64,
+        fd,
+        buf.as_mut_ptr() as u64,
+        buf.len() as u64,
+        0,
+    )
 }
 
 /// Returns the current position of a file descriptor.
 fn position(fd: u64) -> Result<u64, SysCallError> {
-    syscall(SYS_SEEK, fd, 0, SeekMode::Relative as u64, 0)
+    syscall(SysNo::Lseek as u64, fd, 0, SeekMode::Relative as u64, 0)
 }
 
 fn close_fd(fd: u64) -> Result<u64, SysCallError> {
-    syscall(SYS_CLOSE, fd, 0, 0, 0)
+    syscall(SysNo::Close as u64, fd, 0, 0, 0)
 }
 
 fn unlink_path(path: &CStr) -> Result<u64, SysCallError> {
     let dirfd = AT_FDCWD as i64 as u64;
-    syscall(SYS_UNLINK, dirfd, path.as_ptr() as u64, 0, 0)
+    syscall(SysNo::Unlinkat as u64, dirfd, path.as_ptr() as u64, 0, 0)
 }
 
 /// Issues execve() directly, to pass arguments `exec()` does not.
 fn execve_raw(path: u64, argv: u64, envp: u64) -> Result<u64, SysCallError> {
-    syscall(SYS_EXEC, path, argv, envp, 0)
+    syscall(SysNo::Execve as u64, path, argv, envp, 0)
 }
 
 /// Executes a program, and returns the error, as execve() only returns if it

@@ -10,29 +10,33 @@ use super::syscall::{syscall_insn, syscall_insn3, syscall_insn4};
 use core::ffi::CStr;
 use userlib::{
     AT_FDCWD, AT_REMOVEDIR, DT_DIR, DT_REG, DirEnt, FileFlags, FileModes, FileType, O_ACCMODE,
-    O_APPEND, O_CREAT, O_DIRECTORY, O_EXCL, O_RDONLY, O_RDWR, O_TRUNC, O_WRONLY, SYS_CLOSE,
-    SYS_MKDIR, SYS_OPEN, SYS_READ, SYS_READDIR, SYS_SEEK, SYS_TRUNCATE, SYS_UNLINK, SYS_WRITE,
-    SeekMode, SysCallError, mkdir, open, opendir, read, readdir, rmdir, seek, truncate, unlink,
-    write,
+    O_APPEND, O_CREAT, O_DIRECTORY, O_EXCL, O_RDONLY, O_RDWR, O_TRUNC, O_WRONLY, SeekMode,
+    SysCallError, SysNo, mkdir, open, opendir, read, readdir, rmdir, seek, truncate, unlink, write,
 };
 
 /// Opens a path with the open system call, which works like `openat()`, and
 /// returns the file descriptor, or the negative error number.
 fn raw_open(dirfd: i32, path: &CStr, flags: u32) -> i64 {
     let dirfd = i64::from(dirfd) as u64;
-    syscall_insn4(SYS_OPEN, dirfd, path.as_ptr() as u64, flags.into(), 0) as i64
+    syscall_insn4(
+        SysNo::Openat as u64,
+        dirfd,
+        path.as_ptr() as u64,
+        flags.into(),
+        0,
+    ) as i64
 }
 
 /// Closes a file descriptor.
 fn raw_close(fd: i64) {
-    assert_eq!(syscall_insn(SYS_CLOSE, fd as u64), 0);
+    assert_eq!(syscall_insn(SysNo::Close as u64, fd as u64), 0);
 }
 
 /// Reads from a file descriptor, and returns the number of bytes or the
 /// negative error number.
 fn raw_read(fd: i64, buf: &mut [u8]) -> i64 {
     syscall_insn3(
-        SYS_READ,
+        SysNo::Read as u64,
         fd as u64,
         buf.as_mut_ptr() as u64,
         buf.len() as u64,
@@ -42,7 +46,12 @@ fn raw_read(fd: i64, buf: &mut [u8]) -> i64 {
 /// Writes to a file descriptor, and returns the number of bytes or the
 /// negative error number.
 fn raw_write(fd: i64, buf: &[u8]) -> i64 {
-    syscall_insn3(SYS_WRITE, fd as u64, buf.as_ptr() as u64, buf.len() as u64) as i64
+    syscall_insn3(
+        SysNo::Write as u64,
+        fd as u64,
+        buf.as_ptr() as u64,
+        buf.len() as u64,
+    ) as i64
 }
 
 /// Returns the negative value of an error, as the system calls return it.
@@ -124,9 +133,9 @@ fn test_truncate() {
     // A negative length, as a signed value, is invalid, also for a descriptor
     // that is not open. The size of a file is limited.
     assert_eq!(truncate(&file, u64::MAX), Err(SysCallError::EINVAL));
-    let ret = syscall_insn3(SYS_TRUNCATE, 1000, u64::MAX, 0);
+    let ret = syscall_insn3(SysNo::Ftruncate as u64, 1000, u64::MAX, 0);
     assert_eq!(ret as i64, SysCallError::EINVAL as i64);
-    let ret = syscall_insn3(SYS_TRUNCATE, 1000, 0, 0);
+    let ret = syscall_insn3(SysNo::Ftruncate as u64, 1000, 0, 0);
     assert_eq!(ret as i64, SysCallError::EBADF as i64);
     assert_eq!(truncate(&file, 1 << 40), Err(SysCallError::EFBIG));
     drop(file);
@@ -276,7 +285,7 @@ fn test_open_trunc_append() {
 
     let fd = raw_open(AT_FDCWD, path, O_WRONLY | O_APPEND);
     assert_eq!(raw_write(fd, b"12"), 2);
-    assert_eq!(syscall_insn3(SYS_SEEK, fd as u64, 0, 0), 0);
+    assert_eq!(syscall_insn3(SysNo::Lseek as u64, fd as u64, 0, 0), 0);
     assert_eq!(raw_write(fd, b"34"), 2);
     raw_close(fd);
 
@@ -406,7 +415,7 @@ fn test_mkdir_unlink_at() {
     assert!(dirfd >= 0);
     let dirfd_arg = dirfd as u64;
 
-    let ret = syscall_insn3(SYS_MKDIR, dirfd_arg, c"sub".as_ptr() as u64, 0);
+    let ret = syscall_insn3(SysNo::Mkdirat as u64, dirfd_arg, c"sub".as_ptr() as u64, 0);
     assert_eq!(ret, 0);
     // The directory was created in the directory the descriptor refers to.
     let fd = raw_open(
@@ -418,16 +427,21 @@ fn test_mkdir_unlink_at() {
     raw_close(fd);
 
     // Only AT_REMOVEDIR is a valid flag.
-    let ret = syscall_insn3(SYS_UNLINK, dirfd_arg, c"sub".as_ptr() as u64, 1);
+    let ret = syscall_insn3(SysNo::Unlinkat as u64, dirfd_arg, c"sub".as_ptr() as u64, 1);
     assert_eq!(ret as i64, err(SysCallError::EINVAL));
-    let ret = syscall_insn3(SYS_UNLINK, dirfd_arg, c"sub".as_ptr() as u64, 0);
+    let ret = syscall_insn3(SysNo::Unlinkat as u64, dirfd_arg, c"sub".as_ptr() as u64, 0);
     assert_eq!(ret as i64, err(SysCallError::EISDIR));
     let remove = u64::from(AT_REMOVEDIR);
-    let ret = syscall_insn3(SYS_UNLINK, dirfd_arg, c"sub".as_ptr() as u64, remove);
+    let ret = syscall_insn3(
+        SysNo::Unlinkat as u64,
+        dirfd_arg,
+        c"sub".as_ptr() as u64,
+        remove,
+    );
     assert_eq!(ret, 0);
 
     // A descriptor that is not open.
-    let ret = syscall_insn3(SYS_MKDIR, 1000, c"sub".as_ptr() as u64, 0);
+    let ret = syscall_insn3(SysNo::Mkdirat as u64, 1000, c"sub".as_ptr() as u64, 0);
     assert_eq!(ret as i64, err(SysCallError::EBADF));
 
     raw_close(dirfd);
@@ -534,12 +548,12 @@ fn test_getdents_records() {
     let mut buf = [0u8; 256];
     let ptr = buf.as_mut_ptr() as u64;
 
-    let ret = syscall_insn3(SYS_READDIR, dirfd, ptr, 8);
+    let ret = syscall_insn3(SysNo::Getdents64 as u64, dirfd, ptr, 8);
     assert_eq!(ret as i64, err(SysCallError::EINVAL));
 
     // Each entry has a 19 byte header and a name of one byte, which makes
     // 24 bytes with the NUL and the padding.
-    let len = syscall_insn3(SYS_READDIR, dirfd, ptr, buf.len() as u64) as usize;
+    let len = syscall_insn3(SysNo::Getdents64 as u64, dirfd, ptr, buf.len() as u64) as usize;
     assert_eq!(len, 3 * 24);
     let mut pos = 0;
     let mut count = 0;
@@ -560,17 +574,20 @@ fn test_getdents_records() {
         pos += reclen;
     }
     // The end of the directory.
-    assert_eq!(syscall_insn3(SYS_READDIR, dirfd, ptr, buf.len() as u64), 0);
+    assert_eq!(
+        syscall_insn3(SysNo::Getdents64 as u64, dirfd, ptr, buf.len() as u64),
+        0
+    );
 
     // Seeking to the start lists the entries again, here only one that fits.
-    assert_eq!(syscall_insn3(SYS_SEEK, dirfd, 0, 0), 0);
-    assert_eq!(syscall_insn3(SYS_READDIR, dirfd, ptr, 24), 24);
+    assert_eq!(syscall_insn3(SysNo::Lseek as u64, dirfd, 0, 0), 0);
+    assert_eq!(syscall_insn3(SysNo::Getdents64 as u64, dirfd, ptr, 24), 24);
     // The position is the offset of the entry that was returned.
-    assert_eq!(syscall_insn3(SYS_SEEK, dirfd, 0, 1), 1);
+    assert_eq!(syscall_insn3(SysNo::Lseek as u64, dirfd, 0, 1), 1);
     raw_close(dirfd as i64);
 
     let file = raw_open(AT_FDCWD, c"/test_getdents_records/x", O_RDONLY);
-    let ret = syscall_insn3(SYS_READDIR, file as u64, ptr, buf.len() as u64);
+    let ret = syscall_insn3(SysNo::Getdents64 as u64, file as u64, ptr, buf.len() as u64);
     assert_eq!(ret as i64, err(SysCallError::ENOTDIR));
     raw_close(file);
 

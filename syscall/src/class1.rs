@@ -7,10 +7,9 @@
 use super::call::{SysCallError, syscall2, syscall3, syscall4};
 use super::def::{
     AT_FDCWD, AT_REMOVEDIR, DT_DIR, Dirent64Header, F_NAME_SIZE, FileFlags, FileModes, FileType,
-    O_APPEND, O_CREAT, O_DIRECTORY, O_RDONLY, O_RDWR, O_TRUNC, O_WRONLY, SYS_MKDIR, SYS_OPEN,
-    SYS_READ, SYS_READDIR, SYS_SEEK, SYS_TRUNCATE, SYS_UNLINK, SYS_WRITE, SeekMode,
+    O_APPEND, O_CREAT, O_DIRECTORY, O_RDONLY, O_RDWR, O_TRUNC, O_WRONLY, SeekMode,
 };
-use super::{DirEnt, Obj, ObjHandle};
+use super::{DirEnt, Obj, ObjHandle, SysNo};
 use core::ffi::CStr;
 use core::mem::size_of;
 use zerocopy::FromBytes;
@@ -36,7 +35,7 @@ pub fn opendir(path: &CStr) -> Result<FsObjHandle, SysCallError> {
     // the process.
     unsafe {
         syscall4(
-            SYS_OPEN,
+            SysNo::Openat as u64,
             AT_FDCWD as i64 as u64,
             path.as_ptr() as u64,
             (O_RDONLY | O_DIRECTORY).into(),
@@ -73,7 +72,7 @@ pub fn readdir(fs: &FsObjHandle, dirents: &mut [DirEnt]) -> Result<usize, SysCal
         // SAFETY: The system call writes at most `buf.len()` bytes to `buf`.
         let len = unsafe {
             syscall3(
-                SYS_READDIR,
+                SysNo::Getdents64 as u64,
                 fs.id().into(),
                 buf.as_mut_ptr() as u64,
                 buf.len() as u64,
@@ -138,7 +137,7 @@ pub fn open(path: &CStr, mode: FileModes, flags: FileFlags) -> Result<FsObjHandl
     // the process.
     unsafe {
         syscall4(
-            SYS_OPEN,
+            SysNo::Openat as u64,
             AT_FDCWD as i64 as u64,
             path.as_ptr() as u64,
             open_flags.into(),
@@ -153,7 +152,7 @@ pub fn read(fd: &FsObjHandle, buffer: &mut [u8]) -> Result<usize, SysCallError> 
     // the process. All memory changes happen from kernel context.
     unsafe {
         syscall3(
-            SYS_READ,
+            SysNo::Read as u64,
             fd.id().into(),
             buffer.as_mut_ptr() as u64,
             buffer.len() as u64,
@@ -167,7 +166,7 @@ pub fn write(fd: &FsObjHandle, buffer: &[u8]) -> Result<usize, SysCallError> {
     // Kernel will only read from process memory.
     unsafe {
         syscall3(
-            SYS_WRITE,
+            SysNo::Write as u64,
             fd.id().into(),
             buffer.as_ptr() as u64,
             buffer.len() as u64,
@@ -184,7 +183,14 @@ pub fn write(fd: &FsObjHandle, buffer: &[u8]) -> Result<usize, SysCallError> {
 pub fn seek(fd: &FsObjHandle, offset: i64, mode: SeekMode) -> Result<u64, SysCallError> {
     // SAFETY: Invokes a system call and does not directly change any memory of
     // the process.
-    unsafe { syscall3(SYS_SEEK, fd.id().into(), offset as u64, mode as u64) }
+    unsafe {
+        syscall3(
+            SysNo::Lseek as u64,
+            fd.id().into(),
+            offset as u64,
+            mode as u64,
+        )
+    }
 }
 
 /// Changes the size of the file like ftruncate(). A larger size extends the
@@ -192,21 +198,37 @@ pub fn seek(fd: &FsObjHandle, offset: i64, mode: SeekMode) -> Result<u64, SysCal
 pub fn truncate(fd: &FsObjHandle, length: u64) -> Result<u64, SysCallError> {
     // SAFETY: Invokes a system call and does not directly change any memory of
     // the process.
-    unsafe { syscall2(SYS_TRUNCATE, fd.id().into(), length) }
+    unsafe { syscall2(SysNo::Ftruncate as u64, fd.id().into(), length) }
 }
 
 /// Removes a file with the Linux `unlinkat()` system call.
 pub fn unlink(path: &CStr) -> Result<(), SysCallError> {
     // SAFETY: Invokes a system call and does not directly change any memory of
     // the process.
-    unsafe { syscall3(SYS_UNLINK, AT_FDCWD as i64 as u64, path.as_ptr() as u64, 0).map(|_| ()) }
+    unsafe {
+        syscall3(
+            SysNo::Unlinkat as u64,
+            AT_FDCWD as i64 as u64,
+            path.as_ptr() as u64,
+            0,
+        )
+        .map(|_| ())
+    }
 }
 
 /// Creates a directory with the Linux `mkdirat()` system call.
 pub fn mkdir(path: &CStr) -> Result<(), SysCallError> {
     // SAFETY: Invokes a system call and does not directly change any memory of
     // the process.
-    unsafe { syscall3(SYS_MKDIR, AT_FDCWD as i64 as u64, path.as_ptr() as u64, 0).map(|_| ()) }
+    unsafe {
+        syscall3(
+            SysNo::Mkdirat as u64,
+            AT_FDCWD as i64 as u64,
+            path.as_ptr() as u64,
+            0,
+        )
+        .map(|_| ())
+    }
 }
 
 /// Removes a directory with the Linux `unlinkat()` system call.
@@ -215,7 +237,7 @@ pub fn rmdir(path: &CStr) -> Result<(), SysCallError> {
     // the process.
     unsafe {
         syscall3(
-            SYS_UNLINK,
+            SysNo::Unlinkat as u64,
             AT_FDCWD as i64 as u64,
             path.as_ptr() as u64,
             AT_REMOVEDIR.into(),

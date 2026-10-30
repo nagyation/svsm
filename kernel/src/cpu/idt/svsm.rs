@@ -469,18 +469,18 @@ fn handle_system_call(ctxt: &mut X86ExceptionContext) {
     ctxt.regs.rax = match nr {
         SysNo::ExitGroup => sys_exit(ctxt.regs.rdi as u32),
         SysNo::Execve => {
-            let (file, argv, envp) = (ctxt.regs.rdi, ctxt.regs.rsi, ctxt.regs.r8);
+            let (file, argv, envp) = (ctxt.regs.rdi, ctxt.regs.rsi, ctxt.regs.rdx);
             sys_exec(ctxt, file, argv, envp)
         }
         SysNo::Close => sys_close(ctxt.regs.rdi as u32),
-        SysNo::Openat => sys_open(ctxt.regs.rdi, ctxt.regs.rsi, ctxt.regs.r8, ctxt.regs.r9),
-        SysNo::Read => sys_read(ctxt.regs.rdi as u32, ctxt.regs.rsi, ctxt.regs.r8),
-        SysNo::Write => sys_write(ctxt.regs.rdi as u32, ctxt.regs.rsi, ctxt.regs.r8),
-        SysNo::Lseek => sys_seek(ctxt.regs.rdi as u32, ctxt.regs.rsi, ctxt.regs.r8),
-        SysNo::Unlinkat => sys_unlink(ctxt.regs.rdi, ctxt.regs.rsi, ctxt.regs.r8),
+        SysNo::Openat => sys_open(ctxt.regs.rdi, ctxt.regs.rsi, ctxt.regs.rdx, ctxt.regs.r10),
+        SysNo::Read => sys_read(ctxt.regs.rdi as u32, ctxt.regs.rsi, ctxt.regs.rdx),
+        SysNo::Write => sys_write(ctxt.regs.rdi as u32, ctxt.regs.rsi, ctxt.regs.rdx),
+        SysNo::Lseek => sys_seek(ctxt.regs.rdi as u32, ctxt.regs.rsi, ctxt.regs.rdx),
+        SysNo::Unlinkat => sys_unlink(ctxt.regs.rdi, ctxt.regs.rsi, ctxt.regs.rdx),
         SysNo::Ftruncate => sys_truncate(ctxt.regs.rdi as u32, ctxt.regs.rsi),
-        SysNo::Getdents64 => sys_readdir(ctxt.regs.rdi as u32, ctxt.regs.rsi, ctxt.regs.r8),
-        SysNo::Mkdirat => sys_mkdir(ctxt.regs.rdi, ctxt.regs.rsi, ctxt.regs.r8),
+        SysNo::Getdents64 => sys_readdir(ctxt.regs.rdi as u32, ctxt.regs.rsi, ctxt.regs.rdx),
+        SysNo::Mkdirat => sys_mkdir(ctxt.regs.rdi, ctxt.regs.rsi, ctxt.regs.rdx),
         SysNo::SvsmCapabilities => sys_capabilities(ctxt.regs.rdi as u32),
     }
     .map_or_else(|e| e as usize, |v| v as usize);
